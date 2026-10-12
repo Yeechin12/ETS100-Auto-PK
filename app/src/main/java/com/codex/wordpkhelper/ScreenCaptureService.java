@@ -3,6 +3,7 @@ package com.codex.wordpkhelper;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -37,8 +38,17 @@ public class ScreenCaptureService extends Service {
     static final String EXTRA_RESULT_CODE = "result_code";
     static final String EXTRA_RESULT_DATA = "result_data";
     static final String EXTRA_AUTO = "auto";
+    static final String ACTION_STOP = "com.codex.wordpkhelper.action.STOP";
     private static final String CHANNEL = "wordpk_capture";
     private static final int NOTIFICATION_ID = 19;
+    /** 两次点击之间的最短间隔，避免同一帧被反复点击。 */
+    private static final long MIN_TAP_INTERVAL_MS = 1800;
+    /** 同一答案同一位置的冷却时间；冷却结束后允许再点，避免同一个答案被永久拉黑。 */
+    private static final long SAME_ANSWER_COOLDOWN_MS = 6000;
+    /** 答案框位移超过这个像素数就视为换了新题，可以立即再次点击。 */
+    private static final int TAP_MOVE_TOLERANCE_PX = 24;
+
+    private static volatile ScreenCaptureService instance;
 
     private HandlerThread captureThread;
     private Handler captureHandler;
@@ -54,10 +64,28 @@ public class ScreenCaptureService extends Service {
     private long lastFrameAt;
     private long lastTapAt;
     private String lastTappedQuestion = "";
+    private int lastTappedX = -1;
+    private int lastTappedY = -1;
+
+    private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
+        @Override
+        public void onStop() {
+            // 用户在系统状态栏停止共享屏幕时由系统回调
+            releaseSession();
+            stopSelf();
+        }
+    };
+
+    /** 服务当前是否已经持有一个可用的录屏会话。 */
+    static boolean isRunning() {
+        ScreenCaptureService service = instance;
+        return service != null && service.projection != null;
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
         captureThread = new HandlerThread("wordpk-capture");
@@ -83,25 +111,45 @@ public class ScreenCaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
-        autoMode = intent.getBooleanExtra(EXTRA_AUTO, true);
-        int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
+        if (ACTION_STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
+
+        autoMode = intent.getBooleanExtra(EXTRA_AUTO, autoMode);
+
         Intent resultData = getIntentExtra(intent, EXTRA_RESULT_DATA);
-        if (resultData == null) { stopSelf(); return START_NOT_STICKY; }
+        if (resultData == null) {
+            // 没有新的录屏授权：会话还在就只更新运行模式，否则收工
+            if (projection != null) {
+                WordPkAccessibilityService.showStatus(autoMode ? "已切换为自动点击" : "已切换为仅显示答案");
+            } else {
+                stopSelf();
+            }
+            return START_NOT_STICKY;
+        }
+
+        if (projection != null) {
+            // 已经有一个会话在跑：丢掉这次重复的授权，不要在同一个服务里同时存在两个
+            // MediaProjection 或 VirtualDisplay（旧的那个从此没人释放）。
+            WordPkAccessibilityService.showStatus(autoMode ? "已切换为自动点击" : "已切换为仅显示答案");
+            return START_NOT_STICKY;
+        }
+
+        int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
         try {
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-            projection = manager.getMediaProjection(resultCode, resultData);
-            projection.registerCallback(new MediaProjection.Callback() {
-                @Override public void onStop() { stopSelf(); }
-            }, captureHandler);
+            final MediaProjection session = manager.getMediaProjection(resultCode, resultData);
+            projection = session;
+            session.registerCallback(projectionCallback, captureHandler);
             WordPkAccessibilityService.showStatus("正在准备识别");
             recognizersReady.addOnCompleteListener(task -> {
-                if (projection != null && virtualDisplay == null) {
-                    startCapture();
+                // 只有仍是同一个会话时才建立虚拟显示
+                if (projection == session && virtualDisplay == null) {
+                    startCapture(session);
                     WordPkAccessibilityService.showStatus("正在识别中文释义");
                 }
             });
         } catch (Exception e) {
             WordPkAccessibilityService.showStatus("无法开始屏幕识别");
+            releaseSession();
             stopSelf();
         }
         return START_NOT_STICKY;
@@ -113,7 +161,7 @@ public class ScreenCaptureService extends Service {
         return intent.getParcelableExtra(key);
     }
 
-    private void startCapture() {
+    private void startCapture(MediaProjection session) {
         DisplayMetrics metrics = new DisplayMetrics();
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         wm.getDefaultDisplay().getRealMetrics(metrics);
@@ -129,14 +177,24 @@ public class ScreenCaptureService extends Service {
                 if (ocrBusy.get()) return;
                 lastFrameAt = System.currentTimeMillis();
                 Bitmap bitmap = imageToBitmap(image);
-                if (bitmap != null && ocrBusy.compareAndSet(false, true)) analyze(bitmap, height);
-                else if (bitmap != null) bitmap.recycle();
+                if (bitmap == null) return;
+                if (ocrBusy.compareAndSet(false, true)) {
+                    try {
+                        analyze(bitmap, height);
+                    } catch (Exception error) {
+                        // analyze 里抛异常也必须放锁，否则后续帧会被一直跳过
+                        releaseFrame(bitmap, null, null);
+                        WordPkAccessibilityService.showStatus("识别失败，请重试");
+                    }
+                } else {
+                    bitmap.recycle();
+                }
             } catch (Exception ignored) {
             } finally {
                 if (image != null) image.close();
             }
         }, captureHandler);
-        virtualDisplay = projection.createVirtualDisplay("wordpk-screen", width, height, density,
+        virtualDisplay = session.createVirtualDisplay("wordpk-screen", width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader.getSurface(), null, captureHandler);
     }
 
@@ -270,17 +328,47 @@ public class ScreenCaptureService extends Service {
     private void maybeTap(VocabMatcher.Choice choice) {
         if (choice == null || choice.box == null) return;
         String signature = choice.word + "|" + choice.meaning;
+        int x = choice.box.centerX();
+        int y = choice.box.centerY();
         long now = System.currentTimeMillis();
-        if (signature.equals(lastTappedQuestion) || now - lastTapAt < 1800) return;
-        RectHolder box = new RectHolder(choice.box.centerX(), choice.box.centerY());
+        if (now - lastTapAt < MIN_TAP_INTERVAL_MS) return;
+        boolean sameAnswer = signature.equals(lastTappedQuestion);
+        boolean samePlace = Math.abs(x - lastTappedX) <= TAP_MOVE_TOLERANCE_PX
+                && Math.abs(y - lastTappedY) <= TAP_MOVE_TOLERANCE_PX;
+        // 同一个答案只有在“位置也没变、并且还在冷却期内”时才跳过。新一题给出同样的
+        // 正确选项、或者选项被洗到别的位置时，都要照常点击，否则这个答案会被永久漏掉。
+        if (sameAnswer && samePlace && now - lastTapAt < SAME_ANSWER_COOLDOWN_MS) return;
         lastTappedQuestion = signature;
+        lastTappedX = x;
+        lastTappedY = y;
         lastTapAt = now;
-        WordPkAccessibilityService.tap(box.x, box.y);
+        WordPkAccessibilityService.tap(x, y);
     }
 
-    private static final class RectHolder {
-        final float x, y;
-        RectHolder(float x, float y) { this.x = x; this.y = y; }
+    /** 释放录屏会话相关的全部资源，可以重复调用。 */
+    private void releaseSession() {
+        VirtualDisplay display = virtualDisplay;
+        virtualDisplay = null;
+        if (display != null) {
+            try { display.release(); } catch (Exception ignored) { }
+        }
+        ImageReader reader = imageReader;
+        imageReader = null;
+        if (reader != null) {
+            try {
+                reader.setOnImageAvailableListener(null, null);
+                reader.close();
+            } catch (Exception ignored) { }
+        }
+        MediaProjection session = projection;
+        projection = null;
+        if (session != null) {
+            // 先摘掉回调再 stop()，避免 stop() 触发的 onStop 又回调回来
+            try { session.unregisterCallback(projectionCallback); } catch (Exception ignored) { }
+            try { session.stop(); } catch (Exception ignored) { }
+        }
+        ocrBusy.set(false);
+        lastFrameAt = 0;
     }
 
     private void createNotificationChannel() {
@@ -290,24 +378,33 @@ public class ScreenCaptureService extends Service {
         }
     }
 
+    @SuppressWarnings("deprecation")
     private Notification buildNotification() {
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
+        Intent stopIntent = new Intent(this, ScreenCaptureService.class).setAction(ACTION_STOP);
+        PendingIntent stopPending = PendingIntent.getService(this, 0, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Intent openIntent = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPending = PendingIntent.getActivity(this, 1, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return builder.setSmallIcon(android.R.drawable.ic_menu_search)
                 .setContentTitle("单词 PK 助手正在识别")
-                .setContentText("回到应用并点“停止识别”以结束")
+                .setContentText("识别仅在本机进行，可从这里停止")
+                .setContentIntent(openPending)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止识别", stopPending)
                 .setOngoing(true).build();
     }
 
     @Override
     public void onDestroy() {
-        if (virtualDisplay != null) virtualDisplay.release();
-        if (imageReader != null) imageReader.close();
-        if (projection != null) projection.stop();
-        if (latinRecognizer != null) latinRecognizer.close();
-        if (chineseRecognizer != null) chineseRecognizer.close();
-        if (captureThread != null) captureThread.quitSafely();
+        releaseSession();
+        if (latinRecognizer != null) { latinRecognizer.close(); latinRecognizer = null; }
+        if (chineseRecognizer != null) { chineseRecognizer.close(); chineseRecognizer = null; }
+        if (captureThread != null) { captureThread.quitSafely(); captureThread = null; }
+        if (instance == this) instance = null;
         WordPkAccessibilityService.showStatus("");
         super.onDestroy();
     }

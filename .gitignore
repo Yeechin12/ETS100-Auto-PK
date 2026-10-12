@@ -1,0 +1,18 @@
+# 构建产物
+.gradle/
+build/
+app/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.hprof
+
+# 签名材料：不要提交
+*.keystore
+*.jks
+
+# 系统文件
+.DS_Store
+Thumbs.db

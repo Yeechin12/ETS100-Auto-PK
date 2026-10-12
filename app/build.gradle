@@ -2,16 +2,23 @@ plugins {
     id 'com.android.application'
 }
 
+// debug.keystore 属于签名材料，不应该提交进仓库（见 .gitignore）。
+// 根目录若存在 debug.keystore 就沿用它，否则回退到 AGP 自动生成的默认调试签名，
+// 保证 clone 下来直接 assembleDebug 就能出包。
+def localDebugKeystore = rootProject.file('debug.keystore')
+
 android {
     namespace 'com.codex.wordpkhelper'
     compileSdk 36
 
-    signingConfigs {
-        debug {
-            storeFile rootProject.file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+    if (localDebugKeystore.exists()) {
+        signingConfigs {
+            debug {
+                storeFile localDebugKeystore
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
     }
 
@@ -25,7 +32,9 @@ android {
 
     buildTypes {
         debug {
-            signingConfig signingConfigs.debug
+            if (localDebugKeystore.exists()) {
+                signingConfig signingConfigs.debug
+            }
         }
     }
 }
