@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：一块折射出蓝紫渐变的玻璃面板，加一条顶部高光。
+     内容收在中间 52/108 的安全区里，避免被各厂商的图标蒙版裁掉。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M42,28 H66 A14,14 0 0 1 80,42 V66 A14,14 0 0 1 66,80 H42 A14,14 0 0 1 28,66 V42 A14,14 0 0 1 42,28 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="28"
+                android:startY="28"
+                android:endX="80"
+                android:endY="80">
+                <item android:offset="0" android:color="#FF3B82F6" />
+                <item android:offset="0.55" android:color="#FF7C5CF0" />
+                <item android:offset="1" android:color="#FF22D3EE" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 顶部高光，玻璃的“厚度”来源 -->
+    <path
+        android:pathData="M42,37 H66 A5,5 0 0 1 71,42 V42 A5,5 0 0 1 66,47 H42 A5,5 0 0 1 37,42 V42 A5,5 0 0 1 42,37 Z"
+        android:fillColor="#7AFFFFFF" />
+
+    <!-- 下半部压暗，做出体积感 -->
+    <path
+        android:pathData="M37,58 H71 V66 A14,14 0 0 1 57,80 H42 A14,14 0 0 1 28,66 V58 Z"
+        android:fillColor="#33000000" />
+</vector>
