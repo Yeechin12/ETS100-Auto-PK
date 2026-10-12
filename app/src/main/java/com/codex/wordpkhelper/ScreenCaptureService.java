@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
@@ -20,6 +21,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 import com.google.android.gms.tasks.Tasks;
@@ -48,6 +50,19 @@ public class ScreenCaptureService extends Service {
     /** 答案框位移超过这个像素数就视为换了新题，可以立即再次点击。 */
     private static final int TAP_MOVE_TOLERANCE_PX = 24;
 
+    // 默认识别区域：按屏幕高度比例切两条带（旧行为）。长屏、平板、横屏这类比例明显不同的
+    // 设备上会错位，所以它只是默认值；默认区域认不出题面时改用版面检测出来的区域。
+    private static final float LEGACY_QUESTION_TOP = 0.22f;
+    private static final float LEGACY_QUESTION_BOTTOM = 0.33f;
+    private static final float LEGACY_OPTIONS_TOP = 0.34f;
+    private static final float LEGACY_OPTIONS_BOTTOM = 0.70f;
+    /** 检测出的区域要和默认区域差得够多才启用，保证原本工作正常的机型行为不变。 */
+    private static final float LAYOUT_ADAPT_MIN_SHIFT = 0.06f;
+    /** 版面探测的最小间隔、次数上限；自适应区域连续失败的次数上限。 */
+    private static final long LAYOUT_PROBE_COOLDOWN_MS = 3000;
+    private static final int MAX_LAYOUT_PROBES = 8;
+    private static final int MAX_OVERRIDE_FAILURES = 3;
+
     private static volatile ScreenCaptureService instance;
 
     private HandlerThread captureThread;
@@ -66,6 +81,14 @@ public class ScreenCaptureService extends Service {
     private String lastTappedQuestion = "";
     private int lastTappedX = -1;
     private int lastTappedY = -1;
+
+    private volatile ScreenLayout.Model regionsOverride;
+    private boolean probeRequested;
+    private boolean probeInFlight;
+    private int overrideFailures;
+    private int layoutProbes;
+    private long lastProbeAt;
+    private long layoutScreenKey = -1;
 
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
@@ -215,13 +238,85 @@ public class ScreenCaptureService extends Service {
     }
 
     private void analyze(Bitmap bitmap, int screenHeight) {
-        // Keep the question crop clear of the first answer row. On some devices
-        // that row begins near 35% of screen height and was misread as an English prompt.
-        int questionTop = Math.round(screenHeight * 0.22f);
-        int questionBottom = Math.round(screenHeight * 0.33f);
-        int optionsTop = Math.round(screenHeight * 0.34f);
-        int optionsBottom = Math.round(screenHeight * 0.70f);
-        Bitmap questionCrop = Bitmap.createBitmap(bitmap, 0, questionTop, bitmap.getWidth(), questionBottom - questionTop);
+        int screenWidth = bitmap.getWidth();
+        long screenKey = ((long) screenWidth << 32) | (screenHeight & 0xFFFFFFFFL);
+        if (screenKey != layoutScreenKey) {
+            // 分辨率或方向变了：之前探测出来的区域不再可信
+            layoutScreenKey = screenKey;
+            regionsOverride = null;
+            overrideFailures = 0;
+            layoutProbes = 0;
+            probeRequested = false;
+        }
+        if (matcher.reloadIfChanged()) {
+            WordPkAccessibilityService.showStatus("词表已更新，共 " + matcher.size() + " 条");
+        }
+        if (probeRequested && !probeInFlight && layoutProbes < MAX_LAYOUT_PROBES
+                && System.currentTimeMillis() - lastProbeAt >= LAYOUT_PROBE_COOLDOWN_MS) {
+            probeRequested = false;
+            probeLayout(bitmap, screenWidth, screenHeight);
+            return;
+        }
+
+        ScreenLayout.Model override = regionsOverride;
+        Rect questionRegion;
+        Rect optionsRegion;
+        if (override != null) {
+            questionRegion = override.questionRegion;
+            optionsRegion = override.optionsRegion;
+        } else {
+            questionRegion = new Rect(0, Math.round(screenHeight * LEGACY_QUESTION_TOP), screenWidth,
+                    Math.round(screenHeight * LEGACY_QUESTION_BOTTOM));
+            optionsRegion = new Rect(0, Math.round(screenHeight * LEGACY_OPTIONS_TOP), screenWidth,
+                    Math.round(screenHeight * LEGACY_OPTIONS_BOTTOM));
+        }
+        analyzeRegions(bitmap, questionRegion, optionsRegion, screenWidth, override != null);
+    }
+
+    /**
+     * 用整屏 OCR 探一次版面结构，成功后后续帧改用检测出来的区域。探测这一帧不答题
+     * （多花的开销只有这一帧），结构不明显时继续沿用默认比例区域。
+     */
+    private void probeLayout(Bitmap bitmap, int screenWidth, int screenHeight) {
+        probeInFlight = true;
+        lastProbeAt = System.currentTimeMillis();
+        layoutProbes++;
+        InputImage input = InputImage.fromBitmap(bitmap, 0);
+        Task<Text> chineseTask = chineseRecognizer.process(input);
+        Task<Text> latinTask = latinRecognizer.process(input);
+        Tasks.whenAll(chineseTask, latinTask)
+                .addOnSuccessListener(ignored -> {
+                    List<Text.Line> lines = new ArrayList<>(flatten(chineseTask.getResult()));
+                    lines.addAll(flatten(latinTask.getResult()));
+                    ScreenLayout.Model model = ScreenLayout.detect(lines, screenWidth, screenHeight);
+                    boolean adapt = model != null && differsFromDefault(model, screenHeight);
+                    regionsOverride = adapt ? model : null;
+                    overrideFailures = 0;
+                    WordPkAccessibilityService.showStatus(adapt ? "已按实际版面定位题目区域" : "识别区域正常");
+                })
+                .addOnFailureListener(error -> regionsOverride = null)
+                .addOnCompleteListener(task -> {
+                    probeInFlight = false;
+                    releaseFrame(bitmap, null, null);
+                });
+    }
+
+    /** 检测出的选项区与默认比例区域差得够多才值得改，否则保持原行为。 */
+    private boolean differsFromDefault(ScreenLayout.Model model, int screenHeight) {
+        int tolerance = Math.round(screenHeight * LAYOUT_ADAPT_MIN_SHIFT);
+        int defaultTop = Math.round(screenHeight * LEGACY_OPTIONS_TOP);
+        int defaultBottom = Math.round(screenHeight * LEGACY_OPTIONS_BOTTOM);
+        return Math.abs(model.optionsRegion.top - defaultTop) > tolerance
+                || Math.abs(model.optionsRegion.bottom - defaultBottom) > tolerance;
+    }
+
+    private void analyzeRegions(Bitmap bitmap, Rect questionRegion, Rect optionsRegion,
+                                int screenWidth, boolean adapted) {
+        Bitmap questionCrop = crop(bitmap, questionRegion);
+        if (questionCrop == null) {
+            releaseFrame(bitmap, null, null);
+            return;
+        }
         try {
             Task<Text> chineseQuestionTask = chineseRecognizer.process(
                     InputImage.fromBitmap(questionCrop, 0));
@@ -231,17 +326,19 @@ public class ScreenCaptureService extends Service {
                     .addOnSuccessListener(ignored -> {
                         List<Text.Line> chineseQuestionLines = flatten(chineseQuestionTask.getResult());
                         List<Text.Line> englishQuestionLines = flatten(englishQuestionTask.getResult());
-                        VocabMatcher.Match englishTarget = matcher.findEnglishPromptWord(englishQuestionLines);
+                        VocabMatcher.Match englishTarget =
+                                matcher.findEnglishPromptWord(englishQuestionLines, screenWidth);
                         // The prompt's language is more reliable than OCR results from
                         // Latin text near the answer area; Chinese questions must win.
                         if (hasChineseQuestion(chineseQuestionLines)) {
-                            recognizeEnglishOptions(bitmap, questionCrop, optionsTop, optionsBottom,
-                                    chineseQuestionLines);
+                            recognizeEnglishOptions(bitmap, questionCrop, optionsRegion,
+                                    chineseQuestionLines, adapted);
                         } else if (englishTarget != null) {
-                            recognizeChineseOptions(bitmap, questionCrop, optionsTop, optionsBottom,
-                                    englishTarget.word);
+                            recognizeChineseOptions(bitmap, questionCrop, optionsRegion,
+                                    englishTarget.word, adapted);
                         } else {
                             WordPkAccessibilityService.showStatus("未识别到中英文题干");
+                            onStructuralMiss(adapted);
                             releaseFrame(bitmap, questionCrop, null);
                         }
                     })
@@ -267,15 +364,21 @@ public class ScreenCaptureService extends Service {
         return count >= 3;
     }
 
-    private void recognizeEnglishOptions(Bitmap bitmap, Bitmap questionCrop, int optionsTop,
-                                         int optionsBottom, List<Text.Line> questionLines) {
-        Bitmap optionsCrop = Bitmap.createBitmap(bitmap, 0, optionsTop, bitmap.getWidth(), optionsBottom - optionsTop);
+    private void recognizeEnglishOptions(Bitmap bitmap, Bitmap questionCrop, Rect optionsRegion,
+                                         List<Text.Line> questionLines, boolean adapted) {
+        Bitmap optionsCrop = crop(bitmap, optionsRegion);
+        if (optionsCrop == null) {
+            releaseFrame(bitmap, questionCrop, null);
+            onStructuralMiss(adapted);
+            return;
+        }
         try {
             latinRecognizer.process(InputImage.fromBitmap(optionsCrop, 0))
                     .addOnSuccessListener(text -> {
+                        List<String> seenOptions = new ArrayList<>();
                         VocabMatcher.Choice choice = matcher.findBestEnglishOption(
-                                questionLines, flatten(text), optionsTop);
-                        showChoice(choice);
+                                questionLines, flatten(text), optionsRegion.top, seenOptions);
+                        showChoice(choice, seenOptions, adapted);
                     })
                     .addOnFailureListener(error -> WordPkAccessibilityService.showStatus("英文选项识别失败"))
                     .addOnCompleteListener(task -> releaseFrame(bitmap, questionCrop, optionsCrop));
@@ -285,15 +388,21 @@ public class ScreenCaptureService extends Service {
         }
     }
 
-    private void recognizeChineseOptions(Bitmap bitmap, Bitmap questionCrop, int optionsTop,
-                                         int optionsBottom, String englishTarget) {
-        Bitmap optionsCrop = Bitmap.createBitmap(bitmap, 0, optionsTop, bitmap.getWidth(), optionsBottom - optionsTop);
+    private void recognizeChineseOptions(Bitmap bitmap, Bitmap questionCrop, Rect optionsRegion,
+                                         String englishTarget, boolean adapted) {
+        Bitmap optionsCrop = crop(bitmap, optionsRegion);
+        if (optionsCrop == null) {
+            releaseFrame(bitmap, questionCrop, null);
+            onStructuralMiss(adapted);
+            return;
+        }
         try {
             chineseRecognizer.process(InputImage.fromBitmap(optionsCrop, 0))
                     .addOnSuccessListener(text -> {
+                        List<String> seenOptions = new ArrayList<>();
                         VocabMatcher.Choice choice = matcher.findBestChineseOption(
-                                englishTarget, flatten(text), optionsTop);
-                        showChoice(choice);
+                                englishTarget, flatten(text), optionsRegion.top, seenOptions);
+                        showChoice(choice, seenOptions, adapted);
                     })
                     .addOnFailureListener(error -> WordPkAccessibilityService.showStatus("中文选项识别失败"))
                     .addOnCompleteListener(task -> releaseFrame(bitmap, questionCrop, optionsCrop));
@@ -303,13 +412,60 @@ public class ScreenCaptureService extends Service {
         }
     }
 
-    private void showChoice(VocabMatcher.Choice choice) {
+    private void showChoice(VocabMatcher.Choice choice, List<String> seenOptions, boolean adapted) {
         if (choice == null) {
-            WordPkAccessibilityService.showStatus("未匹配到 Unit 1–6 词表中的选项");
+            if (seenOptions.isEmpty()) {
+                // 选项区里一个字都没读到：多半是识别区域不对
+                WordPkAccessibilityService.showStatus("选项区没有识别到文字");
+                onStructuralMiss(adapted);
+            } else {
+                // 读到了选项但词表里没有：换区域也没用，直接把缺口显示出来
+                WordPkAccessibilityService.showStatus("词表未覆盖：" + summarize(seenOptions));
+            }
             return;
         }
+        overrideFailures = 0;
         WordPkAccessibilityService.showStatus("答案：" + choice.meaning);
         if (autoMode) maybeTap(choice);
+    }
+
+    /** 把识别到的选项压成一行短提示，方便按需补词表。 */
+    private String summarize(List<String> options) {
+        List<String> parts = new ArrayList<>();
+        for (String option : options) {
+            if (parts.size() >= 4) break;
+            String text = option.length() > 12 ? option.substring(0, 12) + "…" : option;
+            if (!parts.contains(text)) parts.add(text);
+        }
+        return TextUtils.join(" / ", parts);
+    }
+
+    /**
+     * 题面结构没认出来。默认区域失败就请求一次版面探测；自适应区域连续失败就放弃它重新探测。
+     */
+    private void onStructuralMiss(boolean adapted) {
+        if (!adapted) {
+            probeRequested = true;
+            return;
+        }
+        if (++overrideFailures >= MAX_OVERRIDE_FAILURES) {
+            regionsOverride = null;
+            overrideFailures = 0;
+            probeRequested = true;
+        }
+    }
+
+    private Bitmap crop(Bitmap bitmap, Rect region) {
+        int left = Math.max(0, region.left);
+        int top = Math.max(0, region.top);
+        int right = Math.min(bitmap.getWidth(), region.right);
+        int bottom = Math.min(bitmap.getHeight(), region.bottom);
+        if (right - left <= 0 || bottom - top <= 0) return null;
+        try {
+            return Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top);
+        } catch (Exception error) {
+            return null;
+        }
     }
 
     private void releaseFrame(Bitmap bitmap, Bitmap questionCrop, Bitmap optionsCrop) {
@@ -367,6 +523,12 @@ public class ScreenCaptureService extends Service {
             try { session.unregisterCallback(projectionCallback); } catch (Exception ignored) { }
             try { session.stop(); } catch (Exception ignored) { }
         }
+        probeInFlight = false;
+        probeRequested = false;
+        regionsOverride = null;
+        overrideFailures = 0;
+        layoutProbes = 0;
+        layoutScreenKey = -1;
         ocrBusy.set(false);
         lastFrameAt = 0;
     }

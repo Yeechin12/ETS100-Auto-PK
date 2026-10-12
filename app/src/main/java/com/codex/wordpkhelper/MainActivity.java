@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -16,12 +17,22 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CAPTURE = 41;
     private static final int REQUEST_NOTIFICATIONS = 42;
+    private static final int REQUEST_IMPORT_VOCAB = 43;
+    /** 自定义词表体积上限，防止误选大文件。 */
+    private static final int MAX_VOCAB_BYTES = 512 * 1024;
     private RadioButton autoMode;
     private TextView state;
+    private TextView vocabState;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,7 +57,8 @@ public class MainActivity extends Activity {
         page.addView(title);
 
         TextView intro = new TextView(this);
-        intro.setText("自动判断题目方向，在中英选项中定位答案。识别数据仅在本机处理。\n\n词表：上海教育出版社 Unit 1–6");
+        intro.setText("自动判断题目方向，在中英选项中定位答案。识别数据仅在本机处理。\n\n"
+                + "识别区域默认按屏幕比例定位，认不出题面时会自己按实际版面重新定位。");
         intro.setTextSize(15);
         intro.setTextColor(0xFF566675);
         intro.setPadding(0, dp(12), 0, dp(18));
@@ -85,6 +97,30 @@ public class MainActivity extends Activity {
         });
         page.addView(modes);
 
+        TextView vocabTitle = new TextView(this);
+        vocabTitle.setText("词表");
+        vocabTitle.setTextSize(17);
+        vocabTitle.setTextColor(0xFF14283A);
+        vocabTitle.setTypeface(null, 1);
+        vocabTitle.setPadding(0, dp(18), 0, 0);
+        page.addView(vocabTitle);
+
+        vocabState = new TextView(this);
+        vocabState.setTextSize(14);
+        vocabState.setTextColor(0xFF566675);
+        vocabState.setPadding(0, dp(8), 0, 0);
+        page.addView(vocabState);
+        refreshVocabState();
+
+        Button importButton = button("导入自定义词表（TSV）");
+        importButton.setOnClickListener(v -> {
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*");
+            startActivityForResult(pick, REQUEST_IMPORT_VOCAB);
+        });
+        page.addView(importButton, buttonParams());
+
         Button accessButton = button("第 1 步：开启无障碍服务");
         accessButton.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         page.addView(accessButton, buttonParams());
@@ -121,6 +157,44 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(52));
         p.topMargin = dp(10);
         return p;
+    }
+
+    private void refreshVocabState() {
+        VocabMatcher matcher = new VocabMatcher(this);
+        int custom = matcher.customSize();
+        String customText = custom > 0 ? " + 自定义 " + custom + " 条" : "";
+        vocabState.setText("内置 " + matcher.builtinSize() + " 条" + customText
+                + "\n格式：每行“单词<TAB>释义1;释义2”，同名单词覆盖内置释义；导入后识别过程中立即生效。");
+    }
+
+    private void importVocab(Uri uri) {
+        if (uri == null) {
+            Toast.makeText(this, "没有选择文件", Toast.LENGTH_LONG).show();
+            return;
+        }
+        File target = new File(getFilesDir(), VocabMatcher.CUSTOM_VOCAB_FILE);
+        int count;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("无法读取所选文件");
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int read;
+            while ((read = in.read(chunk)) > 0) {
+                if (buffer.size() + read > MAX_VOCAB_BYTES) throw new IOException("文件超过 512 KB");
+                buffer.write(chunk, 0, read);
+            }
+            // 先校验再落盘：格式不对就不要覆盖已有词表
+            count = VocabMatcher.countEntries(new ByteArrayInputStream(buffer.toByteArray()));
+            if (count == 0) throw new IOException("没有解析出任何“单词<TAB>释义”行");
+            try (FileOutputStream out = new FileOutputStream(target)) {
+                buffer.writeTo(out);
+            }
+        } catch (Exception error) {
+            Toast.makeText(this, "导入失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "已导入 " + count + " 条自定义词条", Toast.LENGTH_LONG).show();
+        refreshVocabState();
     }
 
     private void beginCapture() {
@@ -172,6 +246,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IMPORT_VOCAB) {
+            if (resultCode == RESULT_OK && data != null) importVocab(data.getData());
+            return;
+        }
         if (requestCode != REQUEST_CAPTURE) return;
         if (resultCode != RESULT_OK || data == null) {
             state.setText("屏幕捕获未获授权。");

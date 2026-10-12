@@ -1,8 +1,12 @@
 package com.codex.wordpkhelper;
 
+import android.content.Context;
 import android.graphics.Rect;
 import com.google.mlkit.vision.text.Text;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -14,6 +18,10 @@ import java.util.Map;
 import java.util.Set;
 
 final class VocabMatcher {
+    /** 自定义词表文件名，放在应用私有目录下；格式与内置词表相同，可追加或覆盖同名单词。 */
+    static final String CUSTOM_VOCAB_FILE = "vocab-extra.tsv";
+    private static final String BUILTIN_VOCAB_ASSET = "vocab.tsv";
+
     static final class Match {
         final String word;
         final Rect box;
@@ -24,43 +32,134 @@ final class VocabMatcher {
         final String meaning;
         final Rect box;
         Choice(String word, String meaning, Rect box) {
-            this.word = word; this.meaning = meaning; this.box = box;
+            this.word = word;
+            this.meaning = meaning;
+            this.box = box;
         }
     }
 
+    private final Context context;
+    private final File customFile;
+    private final Map<String, String[]> builtinEntries = new LinkedHashMap<>();
     private final Map<String, String[]> entries = new LinkedHashMap<>();
+    private long loadedStamp = Long.MIN_VALUE;
 
-    VocabMatcher(android.content.Context context) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                context.getAssets().open("vocab.tsv"), StandardCharsets.UTF_8))) {
-            String row;
-            while ((row = reader.readLine()) != null) {
-                String[] parts = row.split("\\t", 2);
-                if (parts.length == 2) entries.put(parts[0].trim().toLowerCase(Locale.ROOT), parts[1].split(";"));
-            }
-        } catch (Exception ignored) { }
+    VocabMatcher(Context context) {
+        Context application = context.getApplicationContext();
+        this.context = application != null ? application : context;
+        this.customFile = new File(this.context.getFilesDir(), CUSTOM_VOCAB_FILE);
+        reload();
     }
 
-    Match findEnglishPromptWord(List<Text.Line> lines) {
+    /** 内置 + 自定义词条总数。 */
+    int size() {
+        return entries.size();
+    }
+
+    /** 内置词条数。 */
+    int builtinSize() {
+        return builtinEntries.size();
+    }
+
+    /** 自定义词条数（0 表示还没导入过）。 */
+    int customSize() {
+        if (!customFile.exists()) return 0;
+        Map<String, String[]> parsed = new LinkedHashMap<>();
+        try (InputStream in = new FileInputStream(customFile)) {
+            readEntries(in, parsed);
+        } catch (Exception ignored) {
+            return 0;
+        }
+        return parsed.size();
+    }
+
+    /** 自定义词表文件，导入时写这里。 */
+    File customFile() {
+        return customFile;
+    }
+
+    /** 词表文件被替换过就重新加载（导入后无需重启识别）。 */
+    boolean reloadIfChanged() {
+        long stamp = stamp();
+        if (stamp == loadedStamp) return false;
+        reload();
+        return true;
+    }
+
+    private long stamp() {
+        if (!customFile.exists()) return 0L;
+        return customFile.lastModified() * 31L + customFile.length();
+    }
+
+    private void reload() {
+        builtinEntries.clear();
+        entries.clear();
+        try (InputStream in = context.getAssets().open(BUILTIN_VOCAB_ASSET)) {
+            readEntries(in, builtinEntries);
+        } catch (Exception ignored) { }
+        entries.putAll(builtinEntries);
+        if (customFile.exists()) {
+            try (InputStream in = new FileInputStream(customFile)) {
+                readEntries(in, entries);
+            } catch (Exception ignored) { }
+        }
+        loadedStamp = stamp();
+    }
+
+    /** 解析词表内容，返回可用条目数；0 表示格式不对。 */
+    static int countEntries(InputStream in) {
+        Map<String, String[]> parsed = new LinkedHashMap<>();
+        try {
+            readEntries(in, parsed);
+        } catch (Exception ignored) {
+            return 0;
+        }
+        return parsed.size();
+    }
+
+    private static void readEntries(InputStream stream, Map<String, String[]> target) throws Exception {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            String row;
+            while ((row = reader.readLine()) != null) {
+                if (row.startsWith("#")) continue;
+                String[] parts = row.split("\\t", 2);
+                if (parts.length != 2) continue;
+                String word = parts[0].trim().toLowerCase(Locale.ROOT);
+                String meanings = parts[1].trim();
+                if (word.isEmpty() || meanings.isEmpty()) continue;
+                String[] values = meanings.split(";");
+                for (int i = 0; i < values.length; i++) values[i] = values[i].trim();
+                target.put(word, values);
+            }
+        }
+    }
+
+    /**
+     * 找英文题干。
+     *
+     * <p>不再用行框面积（长行容易胜出），改为：命中词占整行的比例（题干通常是单独一行的
+     * 单词/短语，而不是含该词的长句） + 字号 + 是否水平居中。
+     */
+    Match findEnglishPromptWord(List<Text.Line> lines, int screenWidth) {
         Match best = null;
-        long bestArea = -1;
-        int bestWordLength = -1;
+        double bestScore = 0;
         boolean tied = false;
         for (Text.Line line : lines) {
             Rect bounds = line.getBoundingBox();
             if (bounds == null) continue;
             String text = normalizeEnglish(line.getText());
+            if (text.isEmpty()) continue;
             for (String word : entries.keySet()) {
                 if (!containsEnglishPhrase(text, word)) continue;
-                long area = (long) bounds.width() * bounds.height();
-                // Prefer the full vocabulary item when one entry is a prefix of another
-                // (for example, "first-aid kit" and "first-aid").
-                if (area > bestArea || (area == bestArea && word.length() > bestWordLength)) {
-                    bestArea = area;
-                    bestWordLength = word.length();
+                String phrase = normalizeEnglish(word);
+                double coverage = phrase.isEmpty() ? 0 : phrase.length() / (double) text.length();
+                double score = coverage * 1000.0 + bounds.height() + centeredBonus(bounds, screenWidth);
+                if (score > bestScore + 1e-6) {
+                    bestScore = score;
                     best = new Match(word, bounds);
                     tied = false;
-                } else if (area == bestArea && word.length() == bestWordLength
+                } else if (Math.abs(score - bestScore) <= 1e-6
                         && best != null && !best.word.equals(word)) {
                     tied = true;
                 }
@@ -69,7 +168,15 @@ final class VocabMatcher {
         return tied ? null : best;
     }
 
-    Choice findBestEnglishOption(List<Text.Line> questionLines, List<Text.Line> optionLines, int optionsTop) {
+    /** 越靠近屏幕水平中心得分越高：题干一般在屏幕正中。 */
+    private double centeredBonus(Rect bounds, int screenWidth) {
+        if (screenWidth <= 0) return 0;
+        double offset = Math.abs(bounds.centerX() - screenWidth / 2.0) / (screenWidth / 2.0);
+        return Math.max(0, 1 - offset * 2) * 200.0;
+    }
+
+    Choice findBestEnglishOption(List<Text.Line> questionLines, List<Text.Line> optionLines, int optionsTop,
+                                 List<String> seenOptions) {
         StringBuilder promptBuilder = new StringBuilder();
         questionLines.stream()
                 .sorted((a, b) -> {
@@ -85,7 +192,12 @@ final class VocabMatcher {
         for (Text.Line line : optionLines) {
             Rect bounds = line.getBoundingBox();
             if (bounds == null) continue;
-            String option = normalizeEnglish(line.getText());
+            String raw = line.getText() == null ? "" : line.getText().trim();
+            String option = normalizeEnglish(raw);
+            if (option.isEmpty()) continue;
+            if (seenOptions != null && !raw.isEmpty() && !seenOptions.contains(raw)) {
+                seenOptions.add(raw);
+            }
             String key = option + "@" + (bounds.centerY() / Math.max(1, bounds.height() * 2));
             if (!seen.add(key)) continue;
             List<String> matches = new ArrayList<>();
@@ -134,7 +246,8 @@ final class VocabMatcher {
         return new Choice(scored.get(0).word, scored.get(0).word, screenBox);
     }
 
-    Choice findBestChineseOption(String word, List<Text.Line> optionLines, int optionsTop) {
+    Choice findBestChineseOption(String word, List<Text.Line> optionLines, int optionsTop,
+                                 List<String> seenOptions) {
         String[] meanings = entries.get(word.toLowerCase(Locale.ROOT));
         if (meanings == null) return null;
         List<ScoredOption> scored = new ArrayList<>();
@@ -144,6 +257,10 @@ final class VocabMatcher {
             if (bounds == null) continue;
             String option = normalizeChinese(line.getText());
             if (option.isEmpty()) continue;
+            if (seenOptions != null) {
+                String raw = line.getText() == null ? "" : line.getText().trim();
+                if (!raw.isEmpty() && !seenOptions.contains(raw)) seenOptions.add(raw);
+            }
             String key = option + "@" + (bounds.centerY() / Math.max(1, bounds.height() * 2));
             if (!seen.add(key)) continue;
             int score = 0;
@@ -192,12 +309,6 @@ final class VocabMatcher {
             }
         }
         return dp[a.length()][b.length()];
-    }
-
-    String meanings(String word) {
-        String[] values = entries.get(word.toLowerCase(Locale.ROOT));
-        if (values == null) return "";
-        return android.text.TextUtils.join("；", values);
     }
 
     private String normalizeChinese(String value) {
