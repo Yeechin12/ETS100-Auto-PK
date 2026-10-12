@@ -1,14 +1,15 @@
 package com.codex.wordpkhelper;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
@@ -18,7 +19,7 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CAPTURE = 41;
-    private static final String PREFS = "wordpk";
+    private static final int REQUEST_NOTIFICATIONS = 42;
     private RadioButton autoMode;
     private TextView state;
 
@@ -71,8 +72,17 @@ public class MainActivity extends Activity {
         boolean auto = getPreferences(MODE_PRIVATE).getBoolean("auto", true);
         autoMode.setChecked(auto);
         showMode.setChecked(!auto);
-        modes.setOnCheckedChangeListener((group, checkedId) ->
-                getPreferences(MODE_PRIVATE).edit().putBoolean("auto", checkedId == autoMode.getId()).apply());
+        modes.setOnCheckedChangeListener((group, checkedId) -> {
+            boolean isAuto = checkedId == autoMode.getId();
+            getPreferences(MODE_PRIVATE).edit().putBoolean("auto", isAuto).apply();
+            // 正在识别时立刻把新的运行模式同步给服务，不必重新授权录屏
+            if (ScreenCaptureService.isRunning()) {
+                Intent update = new Intent(this, ScreenCaptureService.class);
+                update.putExtra(ScreenCaptureService.EXTRA_AUTO, isAuto);
+                startService(update);
+                state.setText(isAuto ? "已切换为自动点击。" : "已切换为仅显示答案。");
+            }
+        });
         page.addView(modes);
 
         Button accessButton = button("第 1 步：开启无障碍服务");
@@ -119,8 +129,38 @@ public class MainActivity extends Activity {
             startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
             return;
         }
+        // 已经在识别时不重新申请录屏授权，只更新运行模式：重复授权会带来多余的
+        // MediaProjection 会话，而旧会话并不会因此被释放。
+        if (ScreenCaptureService.isRunning()) {
+            Intent update = new Intent(this, ScreenCaptureService.class);
+            update.putExtra(ScreenCaptureService.EXTRA_AUTO, autoMode.isChecked());
+            startService(update);
+            state.setText("识别已在运行，已更新运行模式。");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            // 没有通知权限时前台服务通知会被静默，用户就看不到状态栏里的“停止识别”入口
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
+            return;
+        }
+        requestScreenCapture();
+    }
+
+    private void requestScreenCapture() {
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_NOTIFICATIONS) return;
+        if (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            // 通知被拒绝不影响识别本身，只是通知栏里没有停止入口
+            Toast.makeText(this, "未授予通知权限：仍可识别，但通知栏不会显示停止入口", Toast.LENGTH_LONG).show();
+        }
+        requestScreenCapture();
     }
 
     private boolean isAccessibilityEnabled() {
@@ -143,7 +183,7 @@ public class MainActivity extends Activity {
         service.putExtra(ScreenCaptureService.EXTRA_AUTO, autoMode.isChecked());
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
         else startService(service);
-        state.setText("正在识别。切换到 PK 页面；系统状态栏可停止屏幕共享。");
+        state.setText("正在识别。可切换到 PK 页面；通知栏或“停止识别”按钮可结束。");
     }
 
     private int dp(float value) {
