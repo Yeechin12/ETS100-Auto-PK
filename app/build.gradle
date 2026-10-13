@@ -1,5 +1,8 @@
 plugins {
     id 'com.android.application'
+    // 显式使用 Kotlin 插件而不是 AGP 9 的内置 Kotlin，理由见 gradle.properties。
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
 }
 
 // debug.keystore 属于签名材料，不应该提交进仓库（见 .gitignore）。
@@ -9,7 +12,8 @@ def localDebugKeystore = rootProject.file('debug.keystore')
 
 android {
     namespace 'com.codex.wordpkhelper'
-    compileSdk 36
+    // 液态玻璃库 io.github.kyant0:backdrop:2.0.1 的 AAR 元数据要求 minCompileSdk=37。
+    compileSdk 37
 
     if (localDebugKeystore.exists()) {
         signingConfigs {
@@ -26,8 +30,8 @@ android {
         applicationId 'com.codex.wordpkhelper'
         minSdk 24
         targetSdk 35
-        versionCode 5
-        versionName '1.4'
+        versionCode 6
+        versionName '2.0'
     }
 
     buildTypes {
@@ -37,9 +41,47 @@ android {
             }
         }
     }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
 }
 
 dependencies {
     implementation 'com.google.mlkit:text-recognition:16.0.1'
     implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+
+    implementation 'androidx.core:core-ktx:1.19.0'
+    implementation 'androidx.activity:activity-compose:1.13.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.9.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4'
+    implementation 'androidx.savedstate:savedstate-ktx:1.3.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+
+    // Compose 1.12.0 正是 CMP 1.12.0 在 Android 上映射到的 AndroidX 版本，
+    // 与 backdrop 2.0.1 的传递依赖完全一致，因此不会出现重复类。
+    implementation 'androidx.compose.runtime:runtime:1.12.0'
+    implementation 'androidx.compose.ui:ui:1.12.0'
+    implementation 'androidx.compose.ui:ui-graphics:1.12.0'
+    implementation 'androidx.compose.foundation:foundation:1.12.0'
+
+    // 液态玻璃效果
+    implementation 'io.github.kyant0:backdrop:2.0.1'
 }

@@ -5,20 +5,23 @@
 
     <application
         android:allowBackup="false"
-        android:label="单词 PK 助手"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
         <service
-            android:name=".WordPkAccessibilityService"
+            android:name=".service.WordPkAccessibilityService"
             android:exported="true"
-            android:label="单词 PK 助手"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -28,7 +31,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
         <service
-            android:name=".ScreenCaptureService"
+            android:name=".service.ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
     </application>

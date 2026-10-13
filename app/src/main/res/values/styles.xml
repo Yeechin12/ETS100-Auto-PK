@@ -1,11 +1,17 @@
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <!-- 深色主题：极光背景是深色，所以系统栏图标要用浅色。
+         targetSdk 35 起系统强制 edge-to-edge，界面自己用 insets padding 避让。 -->
+    <style name="AppTheme.Base" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#1687D9</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F6F8FA</item>
-        <item name="android:navigationBarColor">#F6F8FA</item>
-        <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:windowBackground">#F6F8FA</item>
+        <item name="android:colorAccent">#3B82F6</item>
+        <item name="android:windowBackground">#FF04070D</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
     </style>
+
+    <!-- windowLightNavigationBar 是 API 27 才有的属性，放在 values-v27 里覆盖，
+         避免在低版本上撞到厂商自定义属性的 id 冲突。 -->
+    <style name="AppTheme" parent="AppTheme.Base" />
 </resources>

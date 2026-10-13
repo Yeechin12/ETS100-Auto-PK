@@ -1,0 +1,4 @@
+<resources>
+    <!-- 自适应图标背景：与界面极光背景同一个底色。 -->
+    <color name="ic_launcher_background">#070B14</color>
+</resources>
