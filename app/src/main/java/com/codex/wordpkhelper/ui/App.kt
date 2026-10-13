@@ -52,9 +52,14 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
  * 3. 顶部栏、底部导航栏是这一子树的**兄弟节点**，用 `drawBackdrop` 折射层内容，
  *    所以滚动时文字会真的从玻璃下面穿过。
  *
- * 页面内的玻璃卡片也在层子树里，它们折射的是「自己之前画在同一位置的像素」，
- * 也就是极光背景。若在某些设备上观感异常，把 [ProvideGlassBackdrop] 从层子树里摘掉即可 ——
- * 那样卡片会自动退化成手绘玻璃（见 `GlassSurface` 的无 backdrop 分支）。
+ * **不要**把 [ProvideGlassBackdrop] 放到 `layerBackdrop` 的子树里。层内的 `drawBackdrop`
+ * 会去采样「正在录制的这一层」自身，形成无界的 RenderNode 嵌套，最后在 RenderThread 里
+ * 以栈溢出崩掉。实测：`SIGSEGV / SEGV_ACCERR`，tombstone 里写着
+ * `Cause: stack pointer is close to top of stack; likely stack overflow`，
+ * backtrace 是 `RenderNode::prepareTreeImpl` 无限递归。所以页面内的玻璃
+ * （`GlassCard` / `GlassButton` / `GlassSegmented` …）走 `GlassSurface` 的手绘分支 ——
+ * 半透明底 + 上亮下暗的高光描边，在极光背景上观感一致，只是不做折射；
+ * 真正的折射只留给层内容的兄弟节点。
  */
 @Composable
 fun WordPkApp(
@@ -68,22 +73,28 @@ fun WordPkApp(
     Box(modifier.fillMaxSize().background(GlassColors.Ink)) {
         val backdrop = rememberLayerBackdrop { drawContent() }
 
-        ProvideGlassBackdrop(backdrop) {
-            Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
-                AuroraBackground()
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(top = GlassDimens.TopBarSpace)
-                ) {
-                    when (page) {
-                        AppPage.Home -> HomePage(actions)
-                        AppPage.Vocab -> VocabPage(vocabRevision, actions.importVocab)
-                        AppPage.Settings -> SettingsPage(vocabRevision)
-                    }
+        // 录制层：极光背景 + 页面内容。这一子树里不能提供 LocalGlassBackdrop（理由见上方 KDoc）。
+        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+            AuroraBackground()
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    // 只让出状态栏与导航栏；顶部玻璃栏的留白放在各页可滚动内容的最前面。
+                    // 若在这里 padding(top = TopBarSpace)，视口就从玻璃栏下方开始，
+                    // 内容永远滑不到栏下面，玻璃的折射也就没有意义了。
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                when (page) {
+                    AppPage.Home -> HomePage(actions)
+                    AppPage.Vocab -> VocabPage(vocabRevision, actions.importVocab)
+                    AppPage.Settings -> SettingsPage(vocabRevision)
                 }
             }
+        }
 
+        // 玻璃浮层：层内容的兄弟节点，只有这里做真实折射。
+        ProvideGlassBackdrop(backdrop) {
             TopBar(page, Modifier.align(Alignment.TopCenter))
             BottomBar(
                 selectedIndex = pageIndex,
@@ -107,6 +118,11 @@ private fun TopBar(page: AppPage, modifier: Modifier = Modifier) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(GlassDimens.BarRadius),
+            // 顶栏压在滚动的正文上，模糊要足够大才能让背后的文字「化开」成一团光，
+            // 否则读起来像文字重影，很脏。
+            tint = Color.White.copy(alpha = 0.13f),
+            blurRadius = 18.dp,
+            refraction = 24.dp,
         ) {
             Row(
                 Modifier
@@ -144,6 +160,9 @@ private fun BottomBar(
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(GlassDimens.BarRadius),
+            tint = Color.White.copy(alpha = 0.13f),
+            blurRadius = 18.dp,
+            refraction = 24.dp,
         ) {
             Row(Modifier.fillMaxWidth().padding(6.dp)) {
                 AppPage.entries.forEachIndexed { index, item ->

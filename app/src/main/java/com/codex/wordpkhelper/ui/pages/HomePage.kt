@@ -46,7 +46,8 @@ fun HomePage(actions: AppActions, modifier: Modifier = Modifier) {
             .padding(horizontal = GlassDimens.ScreenPadding),
         verticalArrangement = Arrangement.spacedBy(GlassDimens.ItemGap),
     ) {
-        Spacer(Modifier.height(2.dp))
+        // 顶部留白：让首屏内容从玻璃栏下方开始；滚动后内容会滑到栏下面被折射
+        Spacer(Modifier.height(GlassDimens.TopBarSpace))
 
         GlassCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -64,7 +65,11 @@ fun HomePage(actions: AppActions, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(14.dp))
             GlassText(
                 text = answer.ifEmpty { "—" },
-                style = GlassType.Display,
+                style = if (answer.isEmpty()) {
+                    GlassType.Display.copy(color = GlassColors.TextDisabled)
+                } else {
+                    GlassType.Display
+                },
                 maxLines = 1,
             )
             Spacer(Modifier.height(6.dp))

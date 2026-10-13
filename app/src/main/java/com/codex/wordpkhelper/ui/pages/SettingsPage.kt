@@ -48,7 +48,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             .padding(horizontal = GlassDimens.ScreenPadding),
         verticalArrangement = Arrangement.spacedBy(GlassDimens.ItemGap),
     ) {
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(GlassDimens.TopBarSpace))
 
         SectionTitle("识别节奏")
         GlassCard {
