@@ -144,8 +144,20 @@ first-aid kit	急救箱
 
 ## 隐私
 
-截屏只在本机解码并交给 ML Kit 识别，应用**没有申请网络权限**，图片不会离开设备；
-`allowBackup="false"`，词表写在应用私有目录。无障碍权限仅用于代点选项。
+截屏只在本机解码并交给 ML Kit 识别，图片不会离开设备；`allowBackup="false"`，
+`dataExtractionRules` 也关掉了云端备份与设备间迁移，词表写在应用私有目录。
+无障碍权限仅用于代点选项。
+
+关于联网：ML Kit 的遥测组件 `com.google.android.datatransport` 会在清单合并时带进
+`INTERNET` 与 `ACCESS_NETWORK_STATE`。应用自己的代码不做任何网络请求，所以清单里用
+`tools:node="remove"` 把这两个权限移除了 —— 可以自己核对装出来的包：
+
+```powershell
+aapt2 dump badging app-debug.apk | Select-String "uses-permission"
+```
+
+这里只移除权限、**不**排除依赖：datatransport 的类仍然存在，只是发不出请求；
+用 `exclude` 排掉该依赖会让 ML Kit 初始化时抛 `NoClassDefFoundError`。
 
 需要留意的是：全屏捕获意味着任意界面内容都会被临时解码到内存并交给 OCR 流水线，
 叠加悬浮窗与手势能力属于高权限组合。另外自动答题本身可能违反「e听说中学」的用户协议，
