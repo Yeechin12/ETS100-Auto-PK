@@ -67,7 +67,7 @@ fun VocabPage(
         contentPadding = PaddingValues(
             start = GlassDimens.ScreenPadding,
             end = GlassDimens.ScreenPadding,
-            top = 2.dp,
+            top = GlassDimens.TopBarSpace,
             bottom = GlassDimens.BottomBarSpace,
         ),
         verticalArrangement = Arrangement.spacedBy(GlassDimens.ItemGap),

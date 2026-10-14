@@ -119,7 +119,8 @@ object GlassDimens {
     val SectionGap = 22.dp
     /** 底部玻璃导航栏占掉的高度，页面内容要留出这么多，否则最后一项会被挡住。 */
     val BottomBarSpace = 108.dp
-    val TopBarSpace = 84.dp
+    /** 顶部玻璃栏本身的高度；状态栏高度由内容容器的 statusBarsPadding 另外处理。 */
+    val TopBarSpace = 96.dp
 }
 
 /**

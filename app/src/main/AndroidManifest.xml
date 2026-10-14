@@ -1,7 +1,22 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ML Kit 的遥测组件 com.google.android.datatransport 会在清单合并时带进
+         INTERNET 与 ACCESS_NETWORK_STATE。本应用自己的代码不做任何网络请求，
+         截屏内容也从不外传，所以这里把这两个权限显式移除，让「不联网」成为
+         系统层面可验证的事实，而不是口头承诺。
+
+         只移除权限、不排除依赖：datatransport 的类仍在，只是发不出请求；
+         若用 exclude 排掉该依赖，ML Kit 初始化时会 NoClassDefFoundError。 -->
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
 
     <application
         android:allowBackup="false"

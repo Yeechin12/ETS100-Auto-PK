@@ -30,8 +30,8 @@ android {
         applicationId 'com.codex.wordpkhelper'
         minSdk 24
         targetSdk 35
-        versionCode 6
-        versionName '2.0'
+        versionCode 9
+        versionName '2.3'
     }
 
     buildTypes {
@@ -84,4 +84,7 @@ dependencies {
 
     // 液态玻璃效果
     implementation 'io.github.kyant0:backdrop:2.0.1'
+    // backdrop 只在 runtime 作用域里带 shapes（Capsule / RoundedRectangle 等形状），
+    // 编译期取不到自己在源码里写的 import，所以这里显式声明一次。
+    implementation 'io.github.kyant0:shapes:1.2.1'
 }

@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -22,16 +23,27 @@ import com.codex.wordpkhelper.settings.SettingsStore
 import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassDivider
 import com.codex.wordpkhelper.ui.glass.GlassRow
-import com.codex.wordpkhelper.ui.glass.GlassSlider
 import com.codex.wordpkhelper.ui.glass.GlassText
 import com.codex.wordpkhelper.ui.glass.GlassToggle
 import com.codex.wordpkhelper.ui.glass.SectionTitle
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidSlider
 import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
+import com.kyant.backdrop.Backdrop
 
+/**
+ * 设置页。
+ *
+ * [glassBackdrop] 必须是**只录了极光背景的那一层**（见 `WordPkApp`）：本页位于内容录制层
+ * 内部，若拿内容层当折射源，滑杆就会采样「包含它自己的那一层」，RenderNode 会无限嵌套。
+ */
 @Composable
-fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
+fun SettingsPage(
+    vocabRevision: Int,
+    glassBackdrop: Backdrop,
+    modifier: Modifier = Modifier,
+) {
     val settings by SettingsStore.state.collectAsState()
     val context = LocalContext.current
     val summary = remember(vocabRevision) { VocabStore.summary(context) }
@@ -48,11 +60,12 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             .padding(horizontal = GlassDimens.ScreenPadding),
         verticalArrangement = Arrangement.spacedBy(GlassDimens.ItemGap),
     ) {
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(GlassDimens.TopBarSpace))
 
         SectionTitle("识别节奏")
         GlassCard {
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "识别间隔",
                 valueText = "${settings.frameIntervalMs} ms",
                 value = settings.frameIntervalMs.toFloat(),
@@ -63,6 +76,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             GlassDivider()
 
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "点击间隔",
                 valueText = "${settings.tapIntervalMs} ms",
                 value = settings.tapIntervalMs.toFloat(),
@@ -73,6 +87,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             GlassDivider()
 
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "同答案冷却",
                 valueText = "${settings.sameAnswerCooldownMs} ms",
                 value = settings.sameAnswerCooldownMs.toFloat(),
@@ -83,6 +98,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             GlassDivider()
 
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "位移容差",
                 valueText = "${settings.moveTolerancePx} px",
                 value = settings.moveTolerancePx.toFloat(),
@@ -132,6 +148,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
             )
             GlassDivider()
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "表面不透明度",
                 valueText = "${(settings.overlayAlpha * 100).toInt()}%",
                 value = settings.overlayAlpha,
@@ -141,6 +158,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
 
             GlassDivider()
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "距状态栏",
                 valueText = "${settings.overlayTopDp} dp",
                 value = settings.overlayTopDp.toFloat(),
@@ -152,6 +170,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
         SectionTitle("玻璃效果")
         GlassCard {
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "折射强度",
                 valueText = "${settings.glassRefractionDp.toInt()} dp",
                 value = settings.glassRefractionDp,
@@ -161,6 +180,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
 
             GlassDivider()
             SettingSlider(
+                glassBackdrop = glassBackdrop,
                 title = "模糊半径",
                 valueText = "${settings.glassBlurDp.toInt()} dp",
                 value = settings.glassBlurDp,
@@ -190,6 +210,7 @@ fun SettingsPage(vocabRevision: Int, modifier: Modifier = Modifier) {
 
 @Composable
 private fun SettingSlider(
+    glassBackdrop: Backdrop,
     title: String,
     valueText: String,
     value: Float,
@@ -206,11 +227,17 @@ private fun SettingSlider(
             Spacer(Modifier.height(3.dp))
             GlassText(subtitle, style = GlassType.Caption)
         }
-        GlassSlider(
-            value = value,
+        // LiquidSlider 内部用 snapshotFlow 监听 value，所以这里必须传一个「读快照状态」的
+        // lambda。直接把 Float 参数捕进去会闭包住首次组合的值，外部改动就同步不进来了。
+        val latestValue by rememberUpdatedState(value)
+        LiquidSlider(
+            value = { latestValue },
             onValueChange = onChange,
             valueRange = range,
-            modifier = Modifier.fillMaxWidth(),
+            // 阈值取量程的千分之一：太小会让回弹动画一直停不下来。
+            visibilityThreshold = (range.endInclusive - range.start) / 1000f,
+            backdrop = glassBackdrop,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
     }
 }
