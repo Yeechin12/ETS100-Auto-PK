@@ -30,9 +30,11 @@ import com.codex.wordpkhelper.state.CaptureBus
 import com.codex.wordpkhelper.ui.glass.GlassSurface
 import com.codex.wordpkhelper.ui.glass.GlassText
 import com.codex.wordpkhelper.ui.glass.Glyph
+import com.codex.wordpkhelper.ui.glass.LocalGlassBackdrop
 import com.codex.wordpkhelper.ui.glass.ProvideGlassBackdrop
 import com.codex.wordpkhelper.ui.glass.StatusDot
-import com.codex.wordpkhelper.ui.glass.glassClickable
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidBottomTab
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidBottomTabs
 import com.codex.wordpkhelper.ui.pages.HomePage
 import com.codex.wordpkhelper.ui.pages.SettingsPage
 import com.codex.wordpkhelper.ui.pages.VocabPage
@@ -41,25 +43,29 @@ import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
 import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 应用根布局。
  *
- * 结构（对应 Backdrop 的标准用法）：
- * 1. `rememberLayerBackdrop { drawContent() }` 建立一个可被折射的录制层；
- * 2. 极光背景 + 页面内容放进 `Modifier.layerBackdrop(backdrop)` 的子树里，成为层内容；
- * 3. 顶部栏、底部导航栏是这一子树的**兄弟节点**，用 `drawBackdrop` 折射层内容，
- *    所以滚动时文字会真的从玻璃下面穿过。
+ * 用**两条**录制层，而不是一条：
  *
- * **不要**把 [ProvideGlassBackdrop] 放到 `layerBackdrop` 的子树里。层内的 `drawBackdrop`
- * 会去采样「正在录制的这一层」自身，形成无界的 RenderNode 嵌套，最后在 RenderThread 里
- * 以栈溢出崩掉。实测：`SIGSEGV / SEGV_ACCERR`，tombstone 里写着
+ * - 图层 A（[auroraBackdrop]）只录极光背景。页面内的玻璃 —— 比如设置页的液体滑杆 ——
+ *   折射它。因为它不包含页面内容，所以在页面里采样它不会变成「采样自己所在的层」。
+ * - 图层 B（[contentBackdrop]）录页面内容。
+ * - 顶栏与底栏是这两层的**兄弟节点**，折射 `rememberCombinedBackdrop(A, B)`，
+ *   既有背景又有滚动的文字，所以滚动时文字会真的从玻璃下面穿过。
+ *
+ * **绝对不要**让某个 `drawBackdrop` 去采样「包含它自己的那一层」。
+ * 那会形成无界的 RenderNode 嵌套，最后在 RenderThread 里以栈溢出崩掉。
+ * 实测 tombstone：`SIGSEGV / SEGV_ACCERR`，
  * `Cause: stack pointer is close to top of stack; likely stack overflow`，
- * backtrace 是 `RenderNode::prepareTreeImpl` 无限递归。所以页面内的玻璃
- * （`GlassCard` / `GlassButton` / `GlassSegmented` …）走 `GlassSurface` 的手绘分支 ——
- * 半透明底 + 上亮下暗的高光描边，在极光背景上观感一致，只是不做折射；
- * 真正的折射只留给层内容的兄弟节点。
+ * backtrace 是 `RenderNode::prepareTreeImpl` 无限递归。
+ * 拆成两条层、并且只把「不含自己的那条」交给页面内玻璃，就是为了兑现这条约束。
+ *
+ * 页面内容仍走 `GlassSurface` 的手绘分支（半透明底 + 高光描边）：只有需要折射的
+ * 组件（液体滑杆、底部 Tab）才显式接收 backdrop，避免每张卡片都挂一个折射节点。
  */
 @Composable
 fun WordPkApp(
@@ -71,11 +77,15 @@ fun WordPkApp(
     val page = AppPage.entries[pageIndex]
 
     Box(modifier.fillMaxSize().background(GlassColors.Ink)) {
-        val backdrop = rememberLayerBackdrop { drawContent() }
-
-        // 录制层：极光背景 + 页面内容。这一子树里不能提供 LocalGlassBackdrop（理由见上方 KDoc）。
-        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+        // 图层 A：只有极光背景。页面内的玻璃折射它（它不含页面内容，安全）。
+        val auroraBackdrop = rememberLayerBackdrop { drawContent() }
+        Box(Modifier.fillMaxSize().layerBackdrop(auroraBackdrop)) {
             AuroraBackground()
+        }
+
+        // 图层 B：页面内容。
+        val contentBackdrop = rememberLayerBackdrop { drawContent() }
+        Box(Modifier.fillMaxSize().layerBackdrop(contentBackdrop)) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -86,15 +96,15 @@ fun WordPkApp(
                     .navigationBarsPadding()
             ) {
                 when (page) {
-                    AppPage.Home -> HomePage(actions)
+                    AppPage.Home -> HomePage(actions, auroraBackdrop)
                     AppPage.Vocab -> VocabPage(vocabRevision, actions.importVocab)
-                    AppPage.Settings -> SettingsPage(vocabRevision)
+                    AppPage.Settings -> SettingsPage(vocabRevision, auroraBackdrop)
                 }
             }
         }
 
-        // 玻璃浮层：层内容的兄弟节点，只有这里做真实折射。
-        ProvideGlassBackdrop(backdrop) {
+        // 玻璃浮层：上面两层的兄弟节点，折射「极光 + 页面内容」。
+        ProvideGlassBackdrop(rememberCombinedBackdrop(auroraBackdrop, contentBackdrop)) {
             TopBar(page, Modifier.align(Alignment.TopCenter))
             BottomBar(
                 selectedIndex = pageIndex,
@@ -151,50 +161,38 @@ private fun BottomBar(
     modifier: Modifier = Modifier,
     onSelect: (Int) -> Unit,
 ) {
+    val backdrop = LocalGlassBackdrop.current
     Box(
         modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = GlassDimens.ScreenPadding, vertical = 12.dp)
     ) {
-        GlassSurface(
+        val glass = backdrop ?: return@Box
+        // 库自带的 LiquidBottomTabs：可以按住放大、也可以横向拖动切换，
+        // 指示器会跟着手指滑动并在松手时回弹到最近的 Tab。
+        LiquidBottomTabs(
+            selectedTabIndex = { selectedIndex },
+            onTabSelected = onSelect,
+            backdrop = glass,
+            tabsCount = AppPage.entries.size,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(GlassDimens.BarRadius),
-            tint = Color.White.copy(alpha = 0.13f),
-            blurRadius = 18.dp,
-            refraction = 24.dp,
         ) {
-            Row(Modifier.fillMaxWidth().padding(6.dp)) {
-                AppPage.entries.forEachIndexed { index, item ->
-                    val selected = index == selectedIndex
-                    val interaction = remember { MutableInteractionSource() }
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(GlassDimens.ControlRadius))
-                            .background(
-                                if (selected) Color.White.copy(alpha = 0.16f)
-                                else Color.Transparent
-                            )
-                            .glassClickable(interaction) { onSelect(index) }
-                            .padding(vertical = 9.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Glyph(
-                            glyph = item.glyph,
-                            color = if (selected) GlassColors.TextPrimary
-                            else GlassColors.TextTertiary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(Modifier.height(5.dp))
-                        GlassText(
-                            text = item.label,
-                            style = GlassType.Caption.copy(
-                                color = if (selected) GlassColors.TextPrimary
-                                else GlassColors.TextTertiary
-                            ),
-                        )
-                    }
+            AppPage.entries.forEachIndexed { index, item ->
+                LiquidBottomTab(index = index, onClick = { onSelect(index) }) {
+                    Glyph(
+                        glyph = item.glyph,
+                        color = if (index == selectedIndex) GlassColors.TextPrimary
+                        else GlassColors.TextTertiary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    GlassText(
+                        text = item.label,
+                        style = GlassType.Caption.copy(
+                            color = if (index == selectedIndex) GlassColors.TextPrimary
+                            else GlassColors.TextTertiary
+                        ),
+                    )
                 }
             }
         }

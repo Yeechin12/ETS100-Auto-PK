@@ -6,8 +6,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -30,10 +28,8 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,9 +46,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,7 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
-import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -75,10 +68,10 @@ import com.kyant.backdrop.shadow.Shadow
  * 由根布局通过 `rememberLayerBackdrop` 建立；悬浮窗里没有这个层，
  * [GlassSurface] 会自动退化成手绘玻璃（半透明底 + 高光描边），保证同一套组件两处都能用。
  */
-val LocalGlassBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
+val LocalGlassBackdrop = staticCompositionLocalOf<Backdrop?> { null }
 
 @Composable
-fun ProvideGlassBackdrop(backdrop: LayerBackdrop, content: @Composable () -> Unit) {
+fun ProvideGlassBackdrop(backdrop: Backdrop, content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalGlassBackdrop provides backdrop, content = content)
 }
 
@@ -263,117 +256,7 @@ fun GlassToggle(
     }
 }
 
-/** 分段选择器：运行模式这类二选一/三选一用它，比一排按钮清晰。 */
-@Composable
-fun GlassSegmented(
-    options: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    GlassSurface(
-        modifier = modifier,
-        shape = RoundedCornerShape(GlassDimens.ControlRadius),
-        tint = GlassColors.GlassTint,
-        refraction = 14.dp,
-        blurRadius = 5.dp,
-    ) {
-        Row(
-            Modifier.padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            options.forEachIndexed { index, option ->
-                val selected = index == selectedIndex
-                val interaction = remember { MutableInteractionSource() }
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(GlassDimens.ChipRadius))
-                        .background(
-                            if (selected) Color.White.copy(alpha = 0.20f) else Color.Transparent
-                        )
-                        .glassClickable(interaction) { onSelect(index) }
-                        .padding(vertical = 11.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    GlassText(
-                        text = option,
-                        style = GlassType.Label.copy(
-                            color = if (selected) GlassColors.TextPrimary
-                            else GlassColors.TextTertiary
-                        ),
-                        align = TextAlign.Center,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-    }
-}
 
-/** 只用基础手势实现的滑杆。 */
-@Composable
-fun GlassSlider(
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    modifier: Modifier = Modifier,
-    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
-) {
-    var widthPx by remember { mutableIntStateOf(0) }
-    val knobPx = with(LocalDensity.current) { 20.dp.toPx() }
-    // 手势回调要保持最新，否则每帧新生成的 lambda 会让 pointerInput 不断重启、拖动会断。
-    val latestOnValueChange by rememberUpdatedState(onValueChange)
-    val latestRange by rememberUpdatedState(valueRange)
-
-    val span = (valueRange.endInclusive - valueRange.start).takeIf { it > 0f } ?: 1f
-    val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
-
-    val emit: (Float) -> Unit = { x ->
-        val usable = widthPx - knobPx
-        if (usable > 0f) {
-            val f = ((x - knobPx / 2f) / usable).coerceIn(0f, 1f)
-            latestOnValueChange(latestRange.start + span * f)
-        }
-    }
-
-    Box(
-        modifier = modifier
-            .height(34.dp)
-            .onSizeChanged { widthPx = it.width }
-            .pointerInput(Unit) {
-                detectTapGestures { offset -> emit(offset.x) }
-            }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ -> emit(change.position.x) }
-            },
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.14f)),
-        )
-        Box(
-            Modifier
-                .fillMaxWidth(fraction)
-                .height(6.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.horizontalGradient(listOf(GlassColors.Cyan, GlassColors.Accent))
-                ),
-        )
-        Box(
-            Modifier
-                .graphicsLayer { translationX = fraction * (widthPx - knobPx) }
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.95f))
-                .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)), CircleShape),
-        )
-    }
-}
 
 /** 设置页的一行：左边标题/说明，右边控件。 */
 @Composable

@@ -23,16 +23,22 @@ import com.codex.wordpkhelper.state.CaptureBus
 import com.codex.wordpkhelper.ui.AppActions
 import com.codex.wordpkhelper.ui.glass.GlassButton
 import com.codex.wordpkhelper.ui.glass.GlassCard
-import com.codex.wordpkhelper.ui.glass.GlassSegmented
 import com.codex.wordpkhelper.ui.glass.GlassText
 import com.codex.wordpkhelper.ui.glass.SectionTitle
 import com.codex.wordpkhelper.ui.glass.StatusDot
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidBottomTab
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidBottomTabs
 import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
+import com.kyant.backdrop.Backdrop
 
 @Composable
-fun HomePage(actions: AppActions, modifier: Modifier = Modifier) {
+fun HomePage(
+    actions: AppActions,
+    glassBackdrop: Backdrop,
+    modifier: Modifier = Modifier,
+) {
     val settings by SettingsStore.state.collectAsState()
     val running by CaptureBus.running.collectAsState()
     val status by CaptureBus.status.collectAsState()
@@ -81,14 +87,35 @@ fun HomePage(actions: AppActions, modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(GlassDimens.SectionGap - GlassDimens.ItemGap))
         SectionTitle("运行模式")
-        GlassSegmented(
-            options = listOf("自动点击", "仅显示答案"),
-            selectedIndex = if (settings.runMode == RunMode.Auto) 0 else 1,
-            onSelect = { index ->
+        // 用库里的 LiquidBottomTabs 当二选一：和底部导航是同一套液态玻璃，
+        // 指示器同样可以点、可以拖。Catalog 里它本来就被当作通用选项条用。
+        LiquidBottomTabs(
+            selectedTabIndex = { if (settings.runMode == RunMode.Auto) 0 else 1 },
+            onTabSelected = { index ->
                 actions.setRunMode(if (index == 0) RunMode.Auto else RunMode.ShowOnly)
             },
+            backdrop = glassBackdrop,
+            tabsCount = 2,
             modifier = Modifier.fillMaxWidth(),
-        )
+        ) {
+            listOf("自动点击", "仅显示答案").forEachIndexed { index, label ->
+                val selected = (settings.runMode == RunMode.Auto) == (index == 0)
+                LiquidBottomTab(
+                    index = index,
+                    onClick = {
+                        actions.setRunMode(if (index == 0) RunMode.Auto else RunMode.ShowOnly)
+                    },
+                ) {
+                    GlassText(
+                        text = label,
+                        style = GlassType.Headline.copy(
+                            color = if (selected) GlassColors.TextPrimary
+                            else GlassColors.TextTertiary
+                        ),
+                    )
+                }
+            }
+        }
         GlassText(
             text = if (settings.runMode == RunMode.Auto) {
                 "识别到答案后会代你点选；点击失败会在状态里提示。"

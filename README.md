@@ -22,10 +22,11 @@ Android 辅助应用：通过屏幕捕获和 ML Kit OCR 识别 e听说中学单�
 ```
 MainActivity (Compose)
   └─ ui/            页面与液态玻璃设计系统
-       ui/glass     GlassSurface / GlassButton / GlassSegmented / GlassSlider …
-       ui/pages     HomePage / VocabPage / SettingsPage
-       ui/overlay   OverlayGlassBar（悬浮条内容）
-       ui/theme     配色、字号、圆角、极光背景
+       ui/glass          GlassSurface / GlassButton / GlassToggle / Glyph（手绘玻璃与基础控件）
+       ui/glass/liquid   从 AndroidLiquidGlass 移植的 LiquidBottomTabs / LiquidSlider 等
+       ui/pages          HomePage / VocabPage / SettingsPage
+       ui/overlay        OverlayGlassBar（悬浮条内容）
+       ui/theme          配色、字号、圆角、极光背景
 
 service/
   ScreenCaptureService        截屏 + OCR 主循环，所有识别状态只在 capture 线程上读写
@@ -39,25 +40,54 @@ settings/   SettingsStore：可调参数，SharedPreferences 持久化 + StateFl
 
 ### 液态玻璃是怎么接的
 
-Backdrop 的原理是「把背景录制成一层，再在玻璃节点上采样它」。所以根布局是这样组织的：
+Backdrop 的原理是「把背景录制成一层，再在玻璃节点上采样它」。这里的根布局用了**两条**层：
 
 ```kotlin
-val backdrop = rememberLayerBackdrop { drawContent() }
-Box(Modifier.layerBackdrop(backdrop)) {   // 极光背景 + 页面内容 → 成为可被折射的层
-    AuroraBackground()
-    PageContent()
+// 图层 A：只有极光背景。页面内的玻璃（液体滑杆、运行模式选择器）折射它 ——
+// 它不包含页面内容，所以在页面里采样它不会「采样到自己所在的层」。
+val auroraBackdrop = rememberLayerBackdrop { drawContent() }
+Box(Modifier.layerBackdrop(auroraBackdrop)) { AuroraBackground() }
+
+// 图层 B：页面内容。
+val contentBackdrop = rememberLayerBackdrop { drawContent() }
+Box(Modifier.layerBackdrop(contentBackdrop)) { PageContent() }
+
+// 玻璃浮层：上面两层的兄弟节点，折射「极光 + 页面内容」，
+// 所以滚动时文字会从玻璃下面穿过。
+ProvideGlassBackdrop(rememberCombinedBackdrop(auroraBackdrop, contentBackdrop)) {
+    TopBar()
+    BottomBar()
 }
-TopBar(backdrop)                          // 兄弟节点，用 drawBackdrop 折射层内容
-BottomBar(backdrop)
 ```
 
-顶部栏与底部导航是层内容的**兄弟节点**，所以滚动时文字会真的从玻璃下面穿过。
-页面内的玻璃卡片通过 `LocalGlassBackdrop` 拿到同一层。
+**唯一要守住的约束**：不要让某个 `drawBackdrop` 去采样「包含它自己的那一层」。
+那会形成无界的 RenderNode 嵌套，最终在 RenderThread 里栈溢出崩溃
+（实测 tombstone：`SIGSEGV / SEGV_ACCERR`，
+`Cause: stack pointer is close to top of stack; likely stack overflow`，
+backtrace 是 `RenderNode::prepareTreeImpl` 无限递归）。拆成两条层的意义就在这里：
+页面内容在图层 B 里，拿到的折射源是图层 A。
 
-悬浮条是例外：它在无障碍窗口里，Backdrop 只能采样「同一个窗口里画在自己前面的像素」，
-在别人的 App 上面没有内容可采样。所以悬浮条走 `GlassSurface` 的手绘玻璃分支
-（半透明底 + 上亮下暗的高光描边），再叠加系统级的跨窗口模糊
+页面里的普通玻璃（卡片、按钮）走 `GlassSurface` 的手绘分支
+（半透明底 + 上亮下暗的高光描边），只有确实需要折射的控件才显式接收 backdrop，
+避免每张卡片都挂一个折射节点。
+
+悬浮条是另一个例外：它在无障碍窗口里，Backdrop 只能采样「同一个窗口里画在自己前面的像素」，
+在别人的 App 上面没有内容可采样。所以悬浮条同样走手绘分支，再叠加系统级的跨窗口模糊
 （`FLAG_BLUR_BEHIND`，Android 12+，部分 ROM 不支持）来虚化背后的画面。
+
+### 第三方组件
+
+`ui/glass/liquid/` 下的 `LiquidBottomTabs`、`LiquidBottomTab`、`LiquidSlider`、
+`DampedDragAnimation`、`InteractiveHighlight`、`LiquidGestures` 移植自
+[Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（Apache License 2.0）
+的 Catalog，各文件头部注明了原始路径与改动。除配色改为本项目的 `GlassColors`、
+去掉亮色主题分支、`Clock.System.now()` 换成 Android 单调时钟之外，还修了上游一个同步缺陷：
+上游用 `snapshotFlow { selectedTabIndex() }` 监听外部索引，而调用方传入的通常是普通
+`Int` 而非快照状态，导致**点按**切换后玻璃指示器不跟随（只有拖动才生效）；
+这里改为按值重启的 `LaunchedEffect`，并让点按直接驱动指示器。
+
+`Capsule` / `RoundedRectangle` 等形状来自 `io.github.kyant0:shapes`。它原本只是 backdrop
+的 runtime 传递依赖，编译期取不到，所以在 `app/build.gradle` 里显式声明了一次。
 
 ## 构建
 
