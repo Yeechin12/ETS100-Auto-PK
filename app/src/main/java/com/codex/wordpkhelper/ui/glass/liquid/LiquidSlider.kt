@@ -102,7 +102,10 @@ fun LiquidSlider(
                         if (isLtr) (targetValue + delta).coerceIn(valueRange)
                         else (targetValue - delta).coerceIn(valueRange)
                     )
-                }
+                },
+                // 滑杆几乎总是放在可滚动页面里：横向拖动时必须吃掉位移，
+                // 否则父级 verticalScroll 会跟着手指的上下抖动一起滚。
+                lockHorizontalDrag = true,
             )
         }
         LaunchedEffect(dampedDragAnimation) {

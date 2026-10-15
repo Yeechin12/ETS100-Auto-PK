@@ -39,6 +39,15 @@ class DampedDragAnimation(
     val onDragStarted: DampedDragAnimation.(position: Offset) -> Unit,
     val onDragStopped: DampedDragAnimation.() -> Unit,
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
+    /**
+     * 方向锁。放进可滚动容器里（比如设置页）时必须打开。
+     *
+     * 手势默认不消费指针事件，于是父级 `verticalScroll` 会同时收到同样的位移 ——
+     * 横向拖滑杆时手指的上下抖动就把页面也滚了。打开后先判断主方向：
+     * 判定为横向就 `consume()` 吃掉位移（父级收到已消费事件会停止滚动），
+     * 判定为纵向则完全不插手，页面照常上下滚。
+     */
+    private val lockHorizontalDrag: Boolean = false,
 ) {
 
     private val valueAnimationSpec = spring(1f, 1000f, visibilityThreshold)
@@ -65,9 +74,17 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    val modifier: Modifier = Modifier.pointerInput(Unit) {
+    val modifier: Modifier = Modifier.pointerInput(lockHorizontalDrag) {
+        // 每次手势开始时重置方向判定
+        var horizontalLock: Boolean? = null
+        var travelledX = 0f
+        var travelledY = 0f
+
         inspectDragGestures(
             onDragStart = { down ->
+                horizontalLock = null
+                travelledX = 0f
+                travelledY = 0f
                 onDragStarted(down.position)
                 press()
             },
@@ -80,6 +97,19 @@ class DampedDragAnimation(
                 release()
             }
         ) { change, dragAmount ->
+            if (lockHorizontalDrag) {
+                if (horizontalLock == null) {
+                    travelledX += dragAmount.x
+                    travelledY += dragAmount.y
+                    val slop = viewConfiguration.touchSlop
+                    if (abs(travelledX) > slop || abs(travelledY) > slop) {
+                        horizontalLock = abs(travelledX) >= abs(travelledY)
+                    }
+                }
+                // 纵向（或方向还没判出来）：不消费、也不改值，交给父级滚动
+                if (horizontalLock != true) return@inspectDragGestures
+                change.consume()
+            }
             onDrag(size, dragAmount)
         }
     }

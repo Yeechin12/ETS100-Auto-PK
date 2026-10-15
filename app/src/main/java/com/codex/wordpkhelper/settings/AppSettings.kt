@@ -39,6 +39,10 @@ data class AppSettings(
     val glassRefractionDp: Float = 18f,
     /** 玻璃模糊半径（dp）。 */
     val glassBlurDp: Float = 6f,
+    /** 首次使用时是否自动下载在线词表（内置只有 198 条，在线约 3200 条）。 */
+    val autoDownloadVocab: Boolean = true,
+    /** 自定义词表来源地址；留空表示用内置的默认源。 */
+    val vocabUrl: String = "",
 )
 
 /**
@@ -85,6 +89,8 @@ object SettingsStore {
         overlayWindowBlur = p.getBoolean(KEY_OVERLAY_BLUR, true),
         glassRefractionDp = p.getFloat(KEY_GLASS_REFRACTION, 18f).coerceIn(0f, 48f),
         glassBlurDp = p.getFloat(KEY_GLASS_BLUR, 6f).coerceIn(0f, 32f),
+        autoDownloadVocab = p.getBoolean(KEY_AUTO_VOCAB, true),
+        vocabUrl = p.getString(KEY_VOCAB_URL, "").orEmpty(),
     )
 
     private fun save(p: SharedPreferences, s: AppSettings) {
@@ -101,6 +107,8 @@ object SettingsStore {
             .putBoolean(KEY_OVERLAY_BLUR, s.overlayWindowBlur)
             .putFloat(KEY_GLASS_REFRACTION, s.glassRefractionDp)
             .putFloat(KEY_GLASS_BLUR, s.glassBlurDp)
+            .putBoolean(KEY_AUTO_VOCAB, s.autoDownloadVocab)
+            .putString(KEY_VOCAB_URL, s.vocabUrl)
             .apply()
     }
 
@@ -116,4 +124,6 @@ object SettingsStore {
     private const val KEY_OVERLAY_BLUR = "overlayBlur"
     private const val KEY_GLASS_REFRACTION = "glassRefraction"
     private const val KEY_GLASS_BLUR = "glassBlur"
+    private const val KEY_AUTO_VOCAB = "autoVocab"
+    private const val KEY_VOCAB_URL = "vocabUrl"
 }

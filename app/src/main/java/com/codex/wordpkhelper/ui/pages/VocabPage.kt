@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,6 +23,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.codex.wordpkhelper.core.VocabMatcher
+import com.codex.wordpkhelper.core.VocabRemote
+import com.codex.wordpkhelper.settings.SettingsStore
 import com.codex.wordpkhelper.ui.glass.GlassButton
 import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassFlatSurface
@@ -46,10 +49,12 @@ fun VocabPage(
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
 
-    val matcher = remember(vocabRevision) { VocabMatcher(context) }
-    val builtinSize = remember(vocabRevision) { matcher.builtinSize }
-    val customSize = remember(vocabRevision) { matcher.customSize }
-    val all = remember(vocabRevision) { matcher.snapshotEntries() }
+    val remoteState by VocabRemote.state.collectAsState()
+    val matcher = remember(vocabRevision, remoteState.revision) { VocabMatcher(context) }
+    val builtinSize = remember(vocabRevision, remoteState.revision) { matcher.builtinSize }
+    val remoteSize = remember(vocabRevision, remoteState.revision) { matcher.remoteSize }
+    val customSize = remember(vocabRevision, remoteState.revision) { matcher.customSize }
+    val all = remember(vocabRevision, remoteState.revision) { matcher.snapshotEntries() }
 
     val filtered = remember(query, all) {
         if (query.isBlank()) {
@@ -74,17 +79,25 @@ fun VocabPage(
     ) {
         item {
             GlassCard {
-                GlassText("内置词表 $builtinSize 条", style = GlassType.Headline)
+                GlassText(
+                    text = "词表共 ${builtinSize + remoteSize + customSize} 条",
+                    style = GlassType.Headline,
+                )
                 Spacer(Modifier.height(4.dp))
                 GlassText(
-                    text = if (customSize > 0) "已导入自定义 $customSize 条，同名单词覆盖内置释义。"
-                    else "还没有导入过自定义词表。",
+                    text = buildString {
+                        append("内置 $builtinSize 条")
+                        if (remoteSize > 0) append(" · 在线 $remoteSize 条")
+                        else append(" · 在线词表还没下载")
+                        if (customSize > 0) append(" · 自定义 $customSize 条")
+                    },
                     style = GlassType.Body,
                 )
                 Spacer(Modifier.height(10.dp))
                 GlassText(
-                    text = "格式：每行「单词<TAB>释义」，多个释义用半角分号隔开，UTF-8，" +
-                        "# 开头的行会被忽略。上限 512 KB。",
+                    text = "优先级：自定义 > 在线 > 内置，同名单词后者覆盖前者。\n" +
+                        "导入格式：每行「单词<TAB>释义」，释义用半角或全角分号分隔，" +
+                        "UTF-8，# 开头的行会被忽略，上限 512 KB。",
                     style = GlassType.Caption,
                 )
             }
@@ -120,9 +133,22 @@ fun VocabPage(
 
         item {
             GlassButton(
+                label = if (remoteState.phase == VocabRemote.Phase.Downloading) "正在下载在线词表…"
+                else "从网络更新词表",
+                onClick = {
+                    VocabRemote.refresh(context, SettingsStore.current.vocabUrl.ifBlank { null })
+                },
+                enabled = remoteState.phase != VocabRemote.Phase.Downloading,
+                primary = remoteSize == 0,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        item {
+            GlassButton(
                 label = "导入自定义词表（TSV）",
                 onClick = onImport,
-                primary = true,
+                primary = remoteSize > 0,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

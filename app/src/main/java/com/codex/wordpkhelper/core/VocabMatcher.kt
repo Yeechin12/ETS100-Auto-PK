@@ -34,6 +34,9 @@ class VocabMatcher(context: Context) {
         /** 自定义词表文件名，放在应用私有目录下；格式与内置词表相同，可追加或覆盖同名单词。 */
         const val CUSTOM_VOCAB_FILE = "vocab-extra.tsv"
 
+        /** 在线下载下来的词表文件名，与用户手动导入的分开存放，便于单独更新/清除。 */
+        const val REMOTE_VOCAB_FILE = "vocab-remote.tsv"
+
         private const val BUILTIN_VOCAB_ASSET = "vocab.tsv"
 
         /** 分差小于这个值就认为两个选项一样可信，不猜。 */
@@ -42,6 +45,13 @@ class VocabMatcher(context: Context) {
         private val NON_CHINESE = Regex("[^\\u3400-\\u9FFF]")
         private val NON_LETTER = Regex("[^a-z]+")
         private val WHITESPACE = Regex("\\s+")
+
+        /**
+         * 释义分隔符。内置词表用手角分号，而在线词表（KyleBing/english-vocabulary）
+         * 用的是全角分号，所以两种都得认 —— 否则整行释义会变成一个长串，
+         * 丢掉「按义项精确命中」那一档得分。
+         */
+        private val MEANING_SEPARATOR = Regex("[;；]")
 
         /** 解析词表内容，返回可用条目数；0 表示格式不对。 */
         fun countEntries(input: InputStream): Int {
@@ -64,7 +74,9 @@ class VocabMatcher(context: Context) {
                     val word = parts[0].trim().lowercase(Locale.ROOT)
                     val meanings = parts[1].trim()
                     if (word.isEmpty() || meanings.isEmpty()) continue
-                    target[word] = meanings.split(";").map { it.trim() }
+                    target[word] = MEANING_SEPARATOR.split(meanings)
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
                 }
             }
         }
@@ -72,8 +84,10 @@ class VocabMatcher(context: Context) {
 
     private val context: Context = context.applicationContext ?: context
     private val customFile = File(this.context.filesDir, CUSTOM_VOCAB_FILE)
+    private val remoteFile = File(this.context.filesDir, REMOTE_VOCAB_FILE)
 
     private var builtinEntries: Map<String, List<String>> = emptyMap()
+    private var remoteEntries: Map<String, List<String>> = emptyMap()
     private var entries: Map<String, List<String>> = emptyMap()
 
     /** 词表 key 预先归一化后的结果，避免每帧对每个选项重复跑正则。 */
@@ -85,11 +99,14 @@ class VocabMatcher(context: Context) {
         reload()
     }
 
-    /** 内置 + 自定义词条总数。 */
+    /** 内置 + 在线 + 自定义词条总数。 */
     val size: Int get() = entries.size
 
     /** 内置词条数。 */
     val builtinSize: Int get() = builtinEntries.size
+
+    /** 在线下载的词条数（0 表示还没下载过）。 */
+    val remoteSize: Int get() = remoteEntries.size
 
     /** 自定义词条数（0 表示还没导入过）。 */
     val customSize: Int
@@ -118,9 +135,20 @@ class VocabMatcher(context: Context) {
         return true
     }
 
-    private fun stamp(): Long =
-        if (!customFile.exists()) 0L else customFile.lastModified() * 31L + customFile.length()
+    /**
+     * 词表文件被替换过就重新加载（导入或在线更新后无需重启识别）。
+     * 在线词表与自定义词表任一变化都要算进去。
+     */
+    private fun stamp(): Long = fileStamp(customFile) * 31L + fileStamp(remoteFile)
 
+    private fun fileStamp(file: File): Long =
+        if (!file.exists()) 0L else file.lastModified() * 31L + file.length()
+
+    /**
+     * 词表优先级：内置 → 在线 → 自定义。
+     * 后加载的覆盖同名条目，所以用户手动导入的词条优先级最高，
+     * 在线词表又能盖掉内置那 198 条里不够准确的释义。
+     */
     private fun reload() {
         val builtin = LinkedHashMap<String, List<String>>()
         try {
@@ -129,7 +157,17 @@ class VocabMatcher(context: Context) {
         }
         builtinEntries = builtin
 
+        val remote = LinkedHashMap<String, List<String>>()
+        if (remoteFile.exists()) {
+            try {
+                FileInputStream(remoteFile).use { readEntries(it, remote) }
+            } catch (ignored: Exception) {
+            }
+        }
+        remoteEntries = remote
+
         val merged = LinkedHashMap(builtin)
+        merged.putAll(remote)
         if (customFile.exists()) {
             try {
                 FileInputStream(customFile).use { readEntries(it, merged) }
@@ -155,8 +193,11 @@ class VocabMatcher(context: Context) {
             val bounds = line.boundingBox ?: continue
             val text = normalizeEnglish(line.text)
             if (text.isEmpty()) continue
+            // 词表涨到三千条之后，这里不能再在循环里拼字符串：整行的「已加空格」形式
+            // 只算一次，循环内只做 contains。
+            val padded = padEnglish(text)
             for ((word, normalized) in normalizedWords) {
-                if (!containsEnglishPhrase(text, normalized)) continue
+                if (!englishPhraseIn(padded, normalized)) continue
                 if (normalized.isEmpty()) continue
                 val coverage = normalized.length / text.length.toDouble()
                 val score = coverage * 1000.0 + bounds.height() + centeredBonus(bounds, screenWidth)
@@ -202,10 +243,18 @@ class VocabMatcher(context: Context) {
             val key = option + "@" + (bounds.centerY() / maxOf(1, bounds.height() * 2))
             if (!seen.add(key)) continue
 
-            val matches = normalizedWords.filterValues { containsEnglishPhrase(option, it) }.keys
             // 一行 OCR 文本可能既包含完整短语、也包含更短的词表条目，
             // 同一个显示选项只保留最长的那个匹配。
-            val longest = matches.maxOfOrNull { it.length } ?: continue
+            // 用显式循环而不是 filterValues：后者每个选项都要新建一个 Map。
+            val padded = padEnglish(option)
+            val matches = ArrayList<String>(4)
+            var longest = 0
+            for ((word, normalized) in normalizedWords) {
+                if (normalized.isEmpty() || !englishPhraseIn(padded, normalized)) continue
+                matches.add(word)
+                if (word.length > longest) longest = word.length
+            }
+            if (longest == 0) continue
             for (word in matches) {
                 if (word.length == longest) detectedOptions[word] = bounds
             }
@@ -319,9 +368,12 @@ class VocabMatcher(context: Context) {
             .replace(NON_LETTER.replace(value.lowercase(Locale.ROOT), " "), " ")
             .trim()
 
-    /** 整词匹配：用空格定界，避免 art 命中 start。 */
-    private fun containsEnglishPhrase(normalizedText: String, normalizedPhrase: String): Boolean {
+    /** 整词匹配用的定界形式；一行只算一次，循环里复用。 */
+    private fun padEnglish(normalizedText: String): String = " $normalizedText "
+
+    /** 整词匹配：用空格定界，避免 art 命中 start。[paddedText] 来自 [padEnglish]。 */
+    private fun englishPhraseIn(paddedText: String, normalizedPhrase: String): Boolean {
         if (normalizedPhrase.isEmpty()) return false
-        return " $normalizedText ".contains(" $normalizedPhrase ")
+        return paddedText.contains(" $normalizedPhrase ")
     }
 }

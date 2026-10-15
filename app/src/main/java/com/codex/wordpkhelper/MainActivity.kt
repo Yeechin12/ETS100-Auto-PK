@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.codex.wordpkhelper.core.VocabRemote
 import com.codex.wordpkhelper.core.VocabStore
 import com.codex.wordpkhelper.service.ScreenCaptureService
 import com.codex.wordpkhelper.service.WordPkAccessibilityService
@@ -74,6 +75,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SettingsStore.init(this)
+        // 首次使用：内置词表只有 198 条，装好第一次打开时自己拉一份完整词表。
+        // 失败不阻塞任何功能，界面上会给重试入口。
+        if (SettingsStore.current.autoDownloadVocab) {
+            VocabRemote.ensureFirstRun(this)
+        }
         setContent {
             WordPkApp(
                 actions = AppActions(
