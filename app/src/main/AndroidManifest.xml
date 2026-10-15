@@ -1,22 +1,16 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- ML Kit 的遥测组件 com.google.android.datatransport 会在清单合并时带进
-         INTERNET 与 ACCESS_NETWORK_STATE。本应用自己的代码不做任何网络请求，
-         截屏内容也从不外传，所以这里把这两个权限显式移除，让「不联网」成为
-         系统层面可验证的事实，而不是口头承诺。
+    <!-- 联网只用于「下载词表」。这一条是我们自己申请的，别处不用网络。
 
-         只移除权限、不排除依赖：datatransport 的类仍在，只是发不出请求；
-         若用 exclude 排掉该依赖，ML Kit 初始化时会 NoClassDefFoundError。 -->
-    <uses-permission
-        android:name="android.permission.INTERNET"
-        tools:node="remove" />
-    <uses-permission
-        android:name="android.permission.ACCESS_NETWORK_STATE"
-        tools:node="remove" />
+         代价要说清楚：INTERNET 是应用级权限，没法只授权给这段下载代码 ——
+         ML Kit 的遥测组件 com.google.android.datatransport 也会因此恢复联网能力
+         （它同时声明 ACCESS_NETWORK_STATE，所以那个权限也一并回来了；
+         之所以不再单独移除它，是避免 ML Kit 检查连通性时撞 SecurityException）。
+         截屏内容仍然从不上传：所有 OCR 都在本机完成。详见 README 的隐私章节。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"

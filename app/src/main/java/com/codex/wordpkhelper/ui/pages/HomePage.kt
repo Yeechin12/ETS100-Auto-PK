@@ -13,14 +13,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.codex.wordpkhelper.core.VocabRemote
+import com.codex.wordpkhelper.core.VocabStore
 import com.codex.wordpkhelper.settings.RunMode
 import com.codex.wordpkhelper.settings.SettingsStore
 import com.codex.wordpkhelper.state.CaptureBus
 import com.codex.wordpkhelper.ui.AppActions
+import com.codex.wordpkhelper.ui.components.VocabDownloadBanner
 import com.codex.wordpkhelper.ui.glass.GlassButton
 import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassText
@@ -37,6 +42,7 @@ import com.kyant.backdrop.Backdrop
 fun HomePage(
     actions: AppActions,
     glassBackdrop: Backdrop,
+    vocabRevision: Int,
     modifier: Modifier = Modifier,
 ) {
     val settings by SettingsStore.state.collectAsState()
@@ -44,6 +50,9 @@ fun HomePage(
     val status by CaptureBus.status.collectAsState()
     val answer by CaptureBus.answer.collectAsState()
     val hits by CaptureBus.hitCount.collectAsState()
+    val context = LocalContext.current
+    val remoteState by VocabRemote.state.collectAsState()
+    val summary = remember(vocabRevision, remoteState.revision) { VocabStore.summary(context) }
 
     Column(
         modifier = modifier
@@ -84,6 +93,14 @@ fun HomePage(
                 style = GlassType.Body,
             )
         }
+
+        // 首次使用时的在线词表提示（下载中 / 失败可重试 / 还没下过）
+        VocabDownloadBanner(
+            state = remoteState,
+            installedCount = summary.remoteSize,
+            builtinCount = summary.builtinSize,
+            onUpdate = { VocabRemote.refresh(context, settings.vocabUrl.ifBlank { null }) },
+        )
 
         Spacer(Modifier.height(GlassDimens.SectionGap - GlassDimens.ItemGap))
         SectionTitle("运行模式")

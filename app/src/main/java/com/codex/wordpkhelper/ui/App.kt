@@ -96,7 +96,7 @@ fun WordPkApp(
                     .navigationBarsPadding()
             ) {
                 when (page) {
-                    AppPage.Home -> HomePage(actions, auroraBackdrop)
+                    AppPage.Home -> HomePage(actions, auroraBackdrop, vocabRevision)
                     AppPage.Vocab -> VocabPage(vocabRevision, actions.importVocab)
                     AppPage.Settings -> SettingsPage(vocabRevision, auroraBackdrop)
                 }

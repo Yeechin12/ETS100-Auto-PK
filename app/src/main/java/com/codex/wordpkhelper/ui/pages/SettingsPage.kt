@@ -18,8 +18,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.codex.wordpkhelper.core.VocabRemote
 import com.codex.wordpkhelper.core.VocabStore
 import com.codex.wordpkhelper.settings.SettingsStore
+import com.codex.wordpkhelper.ui.components.VocabRemoteSection
 import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassDivider
 import com.codex.wordpkhelper.ui.glass.GlassRow
@@ -46,7 +48,11 @@ fun SettingsPage(
 ) {
     val settings by SettingsStore.state.collectAsState()
     val context = LocalContext.current
-    val summary = remember(vocabRevision) { VocabStore.summary(context) }
+    val remoteState by VocabRemote.state.collectAsState()
+    val summary = remember(vocabRevision, remoteState.revision) { VocabStore.summary(context) }
+    val remoteLastModified = remember(vocabRevision, remoteState.revision) {
+        VocabRemote.lastModified(context)
+    }
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
@@ -187,6 +193,22 @@ fun SettingsPage(
                 range = 0f..20f,
             ) { SettingsStore.update { s -> s.copy(glassBlurDp = it) } }
         }
+
+        Spacer(Modifier.height(GlassDimens.SectionGap - GlassDimens.ItemGap))
+        SectionTitle("在线词表")
+        VocabRemoteSection(
+            state = remoteState,
+            installedCount = summary.remoteSize,
+            lastModified = remoteLastModified,
+            sourceUrl = settings.vocabUrl,
+            autoDownload = settings.autoDownloadVocab,
+            onToggleAuto = { enabled ->
+                SettingsStore.update { it.copy(autoDownloadVocab = enabled) }
+            },
+            onUpdate = { VocabRemote.refresh(context, settings.vocabUrl.ifBlank { null }) },
+            onClear = { VocabRemote.clear(context) },
+            onUrlChange = { value -> SettingsStore.update { it.copy(vocabUrl = value) } },
+        )
 
         Spacer(Modifier.height(GlassDimens.SectionGap - GlassDimens.ItemGap))
         SectionTitle("关于")

@@ -9,8 +9,12 @@ import java.io.FileOutputStream
 import java.io.IOException
 
 /** 词表规模快照，供词表管理页展示。 */
-data class VocabSummary(val builtinSize: Int, val customSize: Int) {
-    val totalSize: Int get() = builtinSize + customSize
+data class VocabSummary(
+    val builtinSize: Int,
+    val remoteSize: Int,
+    val customSize: Int,
+) {
+    val totalSize: Int get() = builtinSize + remoteSize + customSize
 }
 
 /**
@@ -25,7 +29,7 @@ object VocabStore {
 
     fun summary(context: Context): VocabSummary {
         val matcher = VocabMatcher(context)
-        return VocabSummary(matcher.builtinSize, matcher.customSize)
+        return VocabSummary(matcher.builtinSize, matcher.remoteSize, matcher.customSize)
     }
 
     /**
