@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +55,7 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun LiquidToggle(
@@ -106,15 +108,24 @@ fun LiquidToggle(
         )
     }
 
-    // 拖动/点击只改本地 fraction；外部状态变化时再同步回来。
-    // 直接读一次 selected() 并按值重启，比 snapshotFlow 更可靠 ——
-    // 调用方传进来的通常是普通 Boolean，不是快照状态。
+    // fraction 是开关的真值来源，动画值必须跟着它走 —— 圆钮位置（translationX）
+    // 和轨道颜色都是读 dampedDragAnimation.value 画的。
+    // 少了这一句的后果很隐蔽：点按后 onSelect 改了状态、fraction 也变了，
+    // 但动画值还停在初始值 —— 外观纹丝不动，看起来就是「开关关不掉」；
+    // 拖动时圆钮也不动，松手还会按旧的 targetValue 弹回原位。
+    LaunchedEffect(dampedDragAnimation) {
+        snapshotFlow { fraction }
+            .collectLatest { dampedDragAnimation.updateValue(it) }
+    }
+
+    // 外部状态变化时同步回来。直接读一次 selected() 并按值重启，
+    // 比 snapshotFlow 更可靠 —— 调用方传进来的通常是普通 Boolean，不是快照状态。
+    // 这里只改 fraction：上面那个 effect 会把动画值带过去，两条路径汇到同一处，不会打架。
     val isSelected = selected()
     LaunchedEffect(isSelected) {
         val target = if (isSelected) 1f else 0f
         if (target != fraction) {
             fraction = target
-            dampedDragAnimation.animateToValue(target)
         }
     }
 
