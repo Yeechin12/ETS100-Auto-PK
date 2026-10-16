@@ -22,11 +22,12 @@ import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassDivider
 import com.codex.wordpkhelper.ui.glass.GlassRow
 import com.codex.wordpkhelper.ui.glass.GlassText
-import com.codex.wordpkhelper.ui.glass.GlassToggle
 import com.codex.wordpkhelper.ui.glass.StatusDot
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidToggle
 import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
+import com.kyant.backdrop.Backdrop
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -126,6 +127,7 @@ fun VocabRemoteSection(
     lastModified: Long,
     sourceUrl: String,
     autoDownload: Boolean,
+    glassBackdrop: Backdrop,
     onToggleAuto: (Boolean) -> Unit,
     onUpdate: () -> Unit,
     onClear: () -> Unit,
@@ -201,7 +203,13 @@ fun VocabRemoteSection(
         GlassRow(
             title = "首次使用自动下载",
             subtitle = "装好第一次打开时自己拉一次词表；关掉就只手动更新",
-            trailing = { GlassToggle(checked = autoDownload, onCheckedChange = onToggleAuto) },
+            trailing = {
+                LiquidToggle(
+                    selected = { autoDownload },
+                    onSelect = onToggleAuto,
+                    backdrop = glassBackdrop,
+                )
+            },
         )
         GlassDivider()
 

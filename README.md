@@ -23,7 +23,7 @@ Android 辅助应用：通过屏幕捕获和 ML Kit OCR 识别 e听说中学单�
 MainActivity (Compose)
   └─ ui/            页面与液态玻璃设计系统
        ui/glass          GlassSurface / GlassButton / GlassToggle / Glyph（手绘玻璃与基础控件）
-       ui/glass/liquid   从 AndroidLiquidGlass 移植的 LiquidBottomTabs / LiquidSlider 等
+       ui/glass/liquid   从 AndroidLiquidGlass 移植的 LiquidBottomTabs / LiquidSlider / LiquidToggle 等
        ui/pages          HomePage / VocabPage / SettingsPage
        ui/overlay        OverlayGlassBar（悬浮条内容）
        ui/theme          配色、字号、圆角、极光背景
@@ -77,14 +77,19 @@ backtrace 是 `RenderNode::prepareTreeImpl` 无限递归）。拆成两条层的
 
 ### 第三方组件
 
-`ui/glass/liquid/` 下的 `LiquidBottomTabs`、`LiquidBottomTab`、`LiquidSlider`、
+`ui/glass/liquid/` 下的 `LiquidBottomTabs`、`LiquidBottomTab`、`LiquidSlider`、`LiquidToggle`、
 `DampedDragAnimation`、`InteractiveHighlight`、`LiquidGestures` 移植自
 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（Apache License 2.0）
 的 Catalog，各文件头部注明了原始路径与改动。除配色改为本项目的 `GlassColors`、
-去掉亮色主题分支、`Clock.System.now()` 换成 Android 单调时钟之外，还修了上游一个同步缺陷：
-上游用 `snapshotFlow { selectedTabIndex() }` 监听外部索引，而调用方传入的通常是普通
-`Int` 而非快照状态，导致**点按**切换后玻璃指示器不跟随（只有拖动才生效）；
-这里改为按值重启的 `LaunchedEffect`，并让点按直接驱动指示器。
+去掉亮色主题分支、`Clock.System.now()` 换成 Android 单调时钟之外，还有两处行为修正：
+
+- **外部状态同步**：上游用 `snapshotFlow { selectedTabIndex() }` / `{ selected() }` 监听外部状态，
+  而调用方传入的通常是普通 `Int` / `Boolean` 而非快照状态，flow 收不到变化 ——
+  表现为点按切换后玻璃指示器不跟随、开关状态同步不回来。已改为按值重启的 `LaunchedEffect`。
+- **手势接管**：滑杆与开关都放在可滚动页面里，而它们的手势默认不消费指针事件，
+  父级 `verticalScroll` 会收到同样的位移 —— 横向拖动时手指的上下抖动就把页面也滚了。
+  现在 `DampedDragAnimation` 加了 `captureDrag`：按下即 `consume()`，父级不会进入滚动，
+  整个手势归控件，纵向分量被忽略，也就是「碰到滑杆/开关就只能左右滑」。
 
 `Capsule` / `RoundedRectangle` 等形状来自 `io.github.kyant0:shapes`。它原本只是 backdrop
 的 runtime 传递依赖，编译期取不到，所以在 `app/build.gradle` 里显式声明了一次。

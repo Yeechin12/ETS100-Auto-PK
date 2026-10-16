@@ -26,9 +26,9 @@ import com.codex.wordpkhelper.ui.glass.GlassCard
 import com.codex.wordpkhelper.ui.glass.GlassDivider
 import com.codex.wordpkhelper.ui.glass.GlassRow
 import com.codex.wordpkhelper.ui.glass.GlassText
-import com.codex.wordpkhelper.ui.glass.GlassToggle
 import com.codex.wordpkhelper.ui.glass.SectionTitle
 import com.codex.wordpkhelper.ui.glass.liquid.LiquidSlider
+import com.codex.wordpkhelper.ui.glass.liquid.LiquidToggle
 import com.codex.wordpkhelper.ui.theme.GlassColors
 import com.codex.wordpkhelper.ui.theme.GlassDimens
 import com.codex.wordpkhelper.ui.theme.GlassType
@@ -120,9 +120,12 @@ fun SettingsPage(
                 title = "显示悬浮条",
                 subtitle = "关闭后不再占用屏幕空间",
                 trailing = {
-                    GlassToggle(
-                        checked = settings.overlayEnabled,
-                        onCheckedChange = { v -> SettingsStore.update { it.copy(overlayEnabled = v) } },
+                    LiquidToggle(
+                        selected = { settings.overlayEnabled },
+                        onSelect = { v ->
+                            SettingsStore.update { it.copy(overlayEnabled = v) }
+                        },
+                        backdrop = glassBackdrop,
                     )
                 },
             )
@@ -131,11 +134,12 @@ fun SettingsPage(
                 title = "空闲时也显示",
                 subtitle = "没有识别结果时保留一条「已就绪」提示",
                 trailing = {
-                    GlassToggle(
-                        checked = settings.overlayKeepVisible,
-                        onCheckedChange = { v ->
+                    LiquidToggle(
+                        selected = { settings.overlayKeepVisible },
+                        onSelect = { v ->
                             SettingsStore.update { it.copy(overlayKeepVisible = v) }
                         },
+                        backdrop = glassBackdrop,
                     )
                 },
             )
@@ -144,11 +148,12 @@ fun SettingsPage(
                 title = "窗口背景模糊",
                 subtitle = "请求系统模糊悬浮条背后的内容（Android 12+，部分 ROM 不支持）",
                 trailing = {
-                    GlassToggle(
-                        checked = settings.overlayWindowBlur,
-                        onCheckedChange = { v ->
+                    LiquidToggle(
+                        selected = { settings.overlayWindowBlur },
+                        onSelect = { v ->
                             SettingsStore.update { it.copy(overlayWindowBlur = v) }
                         },
+                        backdrop = glassBackdrop,
                     )
                 },
             )
@@ -202,6 +207,7 @@ fun SettingsPage(
             lastModified = remoteLastModified,
             sourceUrl = settings.vocabUrl,
             autoDownload = settings.autoDownloadVocab,
+            glassBackdrop = glassBackdrop,
             onToggleAuto = { enabled ->
                 SettingsStore.update { it.copy(autoDownloadVocab = enabled) }
             },

@@ -40,14 +40,17 @@ class DampedDragAnimation(
     val onDragStopped: DampedDragAnimation.() -> Unit,
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
     /**
-     * 方向锁。放进可滚动容器里（比如设置页）时必须打开。
+     * 从按下那一刻就完全接管手势。放进可滚动容器里（设置页的滑杆、开关）必须打开。
      *
      * 手势默认不消费指针事件，于是父级 `verticalScroll` 会同时收到同样的位移 ——
-     * 横向拖滑杆时手指的上下抖动就把页面也滚了。打开后先判断主方向：
-     * 判定为横向就 `consume()` 吃掉位移（父级收到已消费事件会停止滚动），
-     * 判定为纵向则完全不插手，页面照常上下滚。
+     * 横向拖控件时手指的上下抖动就把页面也滚了。
+     *
+     * 打开后按下即 `consume()`：父级收到已消费的 down 就不会进入滚动，整个手势归本控件；
+     * 而控件只取位移的 x 分量，纵向分量自然被忽略，效果就是「只能左右滑」。
+     * （先前的写法是先判主方向、纵向就不插手 —— 那样纵向先动一下就再也带动不了滑杆，
+     * 实测体验更差，已废弃。）
      */
-    private val lockHorizontalDrag: Boolean = false,
+    private val captureDrag: Boolean = false,
 ) {
 
     private val valueAnimationSpec = spring(1f, 1000f, visibilityThreshold)
@@ -74,17 +77,12 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    val modifier: Modifier = Modifier.pointerInput(lockHorizontalDrag) {
-        // 每次手势开始时重置方向判定
-        var horizontalLock: Boolean? = null
-        var travelledX = 0f
-        var travelledY = 0f
-
+    val modifier: Modifier = Modifier.pointerInput(captureDrag) {
         inspectDragGestures(
             onDragStart = { down ->
-                horizontalLock = null
-                travelledX = 0f
-                travelledY = 0f
+                // 按下即吃掉：父级 scrollable 收到已消费的 down 就不会开始滚动，
+                // 整个手势归本控件，纵向分量被忽略 → 只能左右滑。
+                if (captureDrag) down.consume()
                 onDragStarted(down.position)
                 press()
             },
@@ -97,19 +95,7 @@ class DampedDragAnimation(
                 release()
             }
         ) { change, dragAmount ->
-            if (lockHorizontalDrag) {
-                if (horizontalLock == null) {
-                    travelledX += dragAmount.x
-                    travelledY += dragAmount.y
-                    val slop = viewConfiguration.touchSlop
-                    if (abs(travelledX) > slop || abs(travelledY) > slop) {
-                        horizontalLock = abs(travelledX) >= abs(travelledY)
-                    }
-                }
-                // 纵向（或方向还没判出来）：不消费、也不改值，交给父级滚动
-                if (horizontalLock != true) return@inspectDragGestures
-                change.consume()
-            }
+            if (captureDrag) change.consume()
             onDrag(size, dragAmount)
         }
     }
