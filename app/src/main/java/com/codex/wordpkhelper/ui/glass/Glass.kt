@@ -217,44 +217,6 @@ fun GlassButton(
     }
 }
 
-/** 自定义开关，避免为了一个 Switch 引入 material3。 */
-@Composable
-fun GlassToggle(
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val knob by animateFloatAsState(if (checked) 1f else 0f, label = "toggleKnob")
-    Box(
-        modifier = modifier
-            .size(width = 50.dp, height = 30.dp)
-            .clip(CircleShape)
-            .background(
-                if (checked) GlassColors.Accent.copy(alpha = 0.78f)
-                else Color.White.copy(alpha = 0.13f)
-            )
-            .border(
-                BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                CircleShape,
-            )
-            .glassClickable(interaction, enabled) { onCheckedChange(!checked) },
-    ) {
-        Box(
-            Modifier
-                .align(Alignment.CenterStart)
-                .graphicsLayer { translationX = knob * 20.dp.toPx() }
-                .padding(start = 5.dp)
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(
-                    if (enabled) Color.White.copy(alpha = 0.95f)
-                    else Color.White.copy(alpha = 0.45f)
-                ),
-        )
-    }
-}
 
 
 

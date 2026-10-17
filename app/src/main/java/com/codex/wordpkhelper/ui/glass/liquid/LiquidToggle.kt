@@ -1,0 +1,215 @@
+/*
+ * 移植自 Kyant0/AndroidLiquidGlass（Apache License 2.0）的 Catalog：
+ *   app/src/commonMain/kotlin/com/kyant/backdrop/catalog/components/LiquidToggle.kt
+ *
+ * 改动（相对上游）：
+ * - 去掉 isSystemInDarkTheme 分支（本应用固定深色），配色改为项目自己的 GlassColors
+ * - 外部选中态的同步：上游用 `LaunchedEffect(selected) { snapshotFlow { selected() } }`，
+ *   而调用方传入的通常是普通 Boolean 而非快照状态，这里改为按值重启的 LaunchedEffect
+ * - 圆钮手势打开 captureDrag：开关同样放在可滚动页面里，
+ *   不接管手势的话拨动开关时页面也会跟着滚
+ *
+ * 结构：轨道自身是一层 backdrop（`layerBackdrop(trackBackdrop)`），
+ * 圆钮折射「页面背景 + 轨道 + 滑块」，所以拨动时能透过玻璃看到轨道颜色在变。
+ */
+package com.codex.wordpkhelper.ui.glass.liquid
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.fastCoerceIn
+import androidx.compose.ui.util.lerp
+import com.codex.wordpkhelper.ui.theme.GlassColors
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
+import com.kyant.shapes.Capsule
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun LiquidToggle(
+    selected: () -> Boolean,
+    onSelect: (Boolean) -> Unit,
+    backdrop: Backdrop,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val accentColor = GlassColors.Mint
+    val trackColor = Color(0xFF787880).copy(alpha = 0.36f)
+
+    val density = LocalDensity.current
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
+    val dragWidth = with(density) { 20f.dp.toPx() }
+    val animationScope = rememberCoroutineScope()
+    var didDrag by remember { mutableStateOf(false) }
+    var fraction by remember { mutableFloatStateOf(if (selected()) 1f else 0f) }
+
+    val dampedDragAnimation = remember(animationScope) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = fraction,
+            valueRange = 0f..1f,
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            pressedScale = 1.5f,
+            onDragStarted = {},
+            onDragStopped = {
+                if (didDrag) {
+                    fraction = if (targetValue >= 0.5f) 1f else 0f
+                    onSelect(fraction == 1f)
+                    didDrag = false
+                } else {
+                    // 没有位移就是一次点击：直接翻转
+                    fraction = if (selected()) 0f else 1f
+                    onSelect(fraction == 1f)
+                }
+            },
+            onDrag = { _, dragAmount ->
+                if (!didDrag) {
+                    didDrag = dragAmount.x != 0f
+                }
+                val delta = dragAmount.x / dragWidth
+                fraction =
+                    if (isLtr) (fraction + delta).fastCoerceIn(0f, 1f)
+                    else (fraction - delta).fastCoerceIn(0f, 1f)
+            },
+            captureDrag = true,
+        )
+    }
+
+    // fraction 是开关的真值来源，动画值必须跟着它走 —— 圆钮位置（translationX）
+    // 和轨道颜色都是读 dampedDragAnimation.value 画的。
+    // 少了这一句的后果很隐蔽：点按后 onSelect 改了状态、fraction 也变了，
+    // 但动画值还停在初始值 —— 外观纹丝不动，看起来就是「开关关不掉」；
+    // 拖动时圆钮也不动，松手还会按旧的 targetValue 弹回原位。
+    LaunchedEffect(dampedDragAnimation) {
+        snapshotFlow { fraction }
+            .collectLatest { dampedDragAnimation.updateValue(it) }
+    }
+
+    // 外部状态变化时同步回来。直接读一次 selected() 并按值重启，
+    // 比 snapshotFlow 更可靠 —— 调用方传进来的通常是普通 Boolean，不是快照状态。
+    // 这里只改 fraction：上面那个 effect 会把动画值带过去，两条路径汇到同一处，不会打架。
+    val isSelected = selected()
+    LaunchedEffect(isSelected) {
+        val target = if (isSelected) 1f else 0f
+        if (target != fraction) {
+            fraction = target
+        }
+    }
+
+    val trackBackdrop = rememberLayerBackdrop()
+
+    Box(
+        modifier,
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            Modifier
+                .layerBackdrop(trackBackdrop)
+                .clip(Capsule())
+                .drawBehind {
+                    val current = dampedDragAnimation.value
+                    drawRect(lerp(trackColor, accentColor, current))
+                }
+                .size(64f.dp, 28f.dp)
+        )
+
+        Box(
+            Modifier
+                .graphicsLayer {
+                    val current = dampedDragAnimation.value
+                    val padding = 2f.dp.toPx()
+                    translationX =
+                        if (isLtr) lerp(padding, padding + dragWidth, current)
+                        else lerp(-padding, -(padding + dragWidth), current)
+                }
+                .semantics { role = Role.Switch }
+                .then(if (enabled) dampedDragAnimation.modifier else Modifier)
+                .drawBackdrop(
+                    backdrop = rememberCombinedBackdrop(
+                        backdrop,
+                        rememberBackdrop(trackBackdrop) { drawBackdrop ->
+                            val progress = dampedDragAnimation.pressProgress
+                            val scaleX = lerp(2f / 3f, 0.75f, progress)
+                            val scaleY = lerp(0f, 0.75f, progress)
+                            scale(scaleX, scaleY) {
+                                drawBackdrop()
+                            }
+                        }
+                    ),
+                    shape = { Capsule() },
+                    effects = {
+                        val progress = dampedDragAnimation.pressProgress
+                        blur(8f.dp.toPx() * (1f - progress))
+                        lens(
+                            5f.dp.toPx() * progress,
+                            10f.dp.toPx() * progress,
+                            chromaticAberration = true
+                        )
+                    },
+                    highlight = {
+                        val progress = dampedDragAnimation.pressProgress
+                        Highlight.Ambient.copy(
+                            width = Highlight.Ambient.width / 1.5f,
+                            blurRadius = Highlight.Ambient.blurRadius / 1.5f,
+                            alpha = progress
+                        )
+                    },
+                    shadow = {
+                        Shadow(
+                            radius = 4f.dp,
+                            color = Color.Black.copy(alpha = 0.05f)
+                        )
+                    },
+                    innerShadow = {
+                        val progress = dampedDragAnimation.pressProgress
+                        InnerShadow(radius = 4f.dp * progress, alpha = progress)
+                    },
+                    layerBlock = {
+                        scaleX = dampedDragAnimation.scaleX
+                        scaleY = dampedDragAnimation.scaleY
+                        val velocity = dampedDragAnimation.velocity / 50f
+                        scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                        scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                    },
+                    onDrawSurface = {
+                        val progress = dampedDragAnimation.pressProgress
+                        drawRect(Color.White.copy(alpha = (1f - progress) * if (enabled) 1f else 0.5f))
+                    }
+                )
+                .size(40f.dp, 24f.dp)
+        )
+    }
+}
