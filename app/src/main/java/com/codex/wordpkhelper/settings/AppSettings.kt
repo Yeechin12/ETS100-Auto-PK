@@ -33,8 +33,6 @@ data class AppSettings(
     val overlayTopDp: Int = 28,
     /** 悬浮条玻璃表面的底色透明度。 */
     val overlayAlpha: Float = 0.55f,
-    /** 是否请求系统对悬浮条背后的内容做跨窗口模糊。 */
-    val overlayWindowBlur: Boolean = true,
     /** 玻璃折射强度（dp）。 */
     val glassRefractionDp: Float = 18f,
     /** 玻璃模糊半径（dp）。 */
@@ -86,7 +84,6 @@ object SettingsStore {
         overlayKeepVisible = p.getBoolean(KEY_OVERLAY_IDLE, true),
         overlayTopDp = p.getInt(KEY_OVERLAY_TOP, 28).coerceIn(0, 400),
         overlayAlpha = p.getFloat(KEY_OVERLAY_ALPHA, 0.55f).coerceIn(0.1f, 1f),
-        overlayWindowBlur = p.getBoolean(KEY_OVERLAY_BLUR, true),
         glassRefractionDp = p.getFloat(KEY_GLASS_REFRACTION, 18f).coerceIn(0f, 48f),
         glassBlurDp = p.getFloat(KEY_GLASS_BLUR, 6f).coerceIn(0f, 32f),
         autoDownloadVocab = p.getBoolean(KEY_AUTO_VOCAB, true),
@@ -104,7 +101,6 @@ object SettingsStore {
             .putBoolean(KEY_OVERLAY_IDLE, s.overlayKeepVisible)
             .putInt(KEY_OVERLAY_TOP, s.overlayTopDp)
             .putFloat(KEY_OVERLAY_ALPHA, s.overlayAlpha)
-            .putBoolean(KEY_OVERLAY_BLUR, s.overlayWindowBlur)
             .putFloat(KEY_GLASS_REFRACTION, s.glassRefractionDp)
             .putFloat(KEY_GLASS_BLUR, s.glassBlurDp)
             .putBoolean(KEY_AUTO_VOCAB, s.autoDownloadVocab)
@@ -121,7 +117,6 @@ object SettingsStore {
     private const val KEY_OVERLAY_IDLE = "overlayIdle"
     private const val KEY_OVERLAY_TOP = "overlayTop"
     private const val KEY_OVERLAY_ALPHA = "overlayAlpha"
-    private const val KEY_OVERLAY_BLUR = "overlayBlur"
     private const val KEY_GLASS_REFRACTION = "glassRefraction"
     private const val KEY_GLASS_BLUR = "glassBlur"
     private const val KEY_AUTO_VOCAB = "autoVocab"
