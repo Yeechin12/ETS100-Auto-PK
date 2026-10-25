@@ -40,9 +40,6 @@ class WordPkAccessibilityService : AccessibilityService() {
         /** 点击手势持续时长，太短部分 ROM 会判定为误触。 */
         private const val TAP_DURATION_MS = 60L
 
-        /** 悬浮条背后内容的跨窗口模糊半径（dp）。 */
-        private const val OVERLAY_BLUR_DP = 26
-
         @Volatile
         private var instance: WordPkAccessibilityService? = null
 
@@ -144,7 +141,7 @@ class WordPkAccessibilityService : AccessibilityService() {
         applyOverlayLayout()
     }
 
-    /** 把设置里的悬浮条位置/模糊同步到窗口参数上。 */
+    /** 把设置里的悬浮条位置同步到窗口参数上。 */
     private fun applyOverlayLayout() {
         val view = overlayView ?: return
         val wm = windowManager ?: return
@@ -154,15 +151,16 @@ class WordPkAccessibilityService : AccessibilityService() {
         params.y = statusBarHeight() +
             ((OVERLAY_BELOW_STATUS_BAR_DP + settings.overlayTopDp) * density).toInt()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (settings.overlayWindowBlur) {
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                params.blurBehindRadius = (OVERLAY_BLUR_DP * density).toInt()
-            } else {
-                params.flags = params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                params.blurBehindRadius = 0
-            }
-        }
+        // 这里刻意**不用** FLAG_BLUR_BEHIND（跨窗口模糊）。
+        //
+        // 起因：开启无障碍后整个屏幕都糊了。浮窗本身是「全屏宽 × 内容高」的窄条，
+        // 按文档模糊范围应当只有这条，但 MIUI/HyperOS 对 TYPE_ACCESSIBILITY_OVERLAY
+        // 的模糊区域处理不可靠，会退化成整屏模糊 —— 而这恰恰是不少机型的默认行为，
+        // 开关默认又是打开的，等于一启用无障碍就废掉整块屏幕。
+        //
+        // 跨窗口模糊在无障碍浮窗上没有可靠的 API 能让它「只糊这一条」，
+        // 所以直接不用：悬浮条的玻璃观感由 OverlayGlassBar 自己画的
+        // 半透明底 + 高光描边 + 阴影承担，那是可控且不依赖 ROM 的。
         runCatching { wm.updateViewLayout(view, params) }
             .onFailure { Log.w(TAG, "悬浮窗更新失败", it) }
     }
