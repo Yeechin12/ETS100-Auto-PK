@@ -144,20 +144,6 @@ fun SettingsPage(
                 },
             )
             GlassDivider()
-            GlassRow(
-                title = "窗口背景模糊",
-                subtitle = "请求系统模糊悬浮条背后的内容（Android 12+，部分 ROM 不支持）",
-                trailing = {
-                    LiquidToggle(
-                        selected = { settings.overlayWindowBlur },
-                        onSelect = { v ->
-                            SettingsStore.update { it.copy(overlayWindowBlur = v) }
-                        },
-                        backdrop = glassBackdrop,
-                    )
-                },
-            )
-            GlassDivider()
             SettingSlider(
                 glassBackdrop = glassBackdrop,
                 title = "表面不透明度",

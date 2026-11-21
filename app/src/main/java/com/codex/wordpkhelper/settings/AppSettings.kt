@@ -18,9 +18,9 @@ enum class RunMode { Auto, ShowOnly }
 data class AppSettings(
     val runMode: RunMode = RunMode.Auto,
     /** 两帧之间的最小间隔，直接决定识别频率与耗电。 */
-    val frameIntervalMs: Long = 700,
+    val frameIntervalMs: Long = 400,
     /** 两次点击之间的最短间隔。 */
-    val tapIntervalMs: Long = 1800,
+    val tapIntervalMs: Long = 1100,
     /** 同一答案同一位置的冷却时间。 */
     val sameAnswerCooldownMs: Long = 6000,
     /** 答案框位移超过这个像素数就视为换了新题。 */
@@ -33,8 +33,6 @@ data class AppSettings(
     val overlayTopDp: Int = 28,
     /** 悬浮条玻璃表面的底色透明度。 */
     val overlayAlpha: Float = 0.55f,
-    /** 是否请求系统对悬浮条背后的内容做跨窗口模糊。 */
-    val overlayWindowBlur: Boolean = true,
     /** 玻璃折射强度（dp）。 */
     val glassRefractionDp: Float = 18f,
     /** 玻璃模糊半径（dp）。 */
@@ -67,6 +65,36 @@ object SettingsStore {
         val store = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         prefs = store
         _state.value = load(store)
+        migratePacing(store)
+    }
+
+    /**
+     * 旧版本的两个节奏默认值偏保守（识别 700ms、点击 1800ms），真机上手感就是「又慢又卡」。
+     *
+     * 这里把**仍然等于旧默认值**的存档下调一档；用户自己调过的不动。
+     * 只改默认值不迁移是不够的 —— `save()` 会把所有字段写进 SharedPreferences，
+     * 老用户存档里躺着的还是旧值，光改默认值他们感觉不到任何变化。
+     */
+    private fun migratePacing(store: SharedPreferences) {
+        if (store.getBoolean(KEY_MIGRATED_PACING, false)) return
+        val current = _state.value
+        val next = current.copy(
+            frameIntervalMs = if (current.frameIntervalMs == LEGACY_FRAME_INTERVAL_MS) {
+                DEFAULT_FRAME_INTERVAL_MS
+            } else {
+                current.frameIntervalMs
+            },
+            tapIntervalMs = if (current.tapIntervalMs == LEGACY_TAP_INTERVAL_MS) {
+                DEFAULT_TAP_INTERVAL_MS
+            } else {
+                current.tapIntervalMs
+            },
+        )
+        store.edit().putBoolean(KEY_MIGRATED_PACING, true).apply()
+        if (next != current) {
+            _state.value = next
+            save(store, next)
+        }
     }
 
     @Synchronized
@@ -78,15 +106,16 @@ object SettingsStore {
 
     private fun load(p: SharedPreferences) = AppSettings(
         runMode = if (p.getBoolean(KEY_AUTO, true)) RunMode.Auto else RunMode.ShowOnly,
-        frameIntervalMs = p.getLong(KEY_FRAME_INTERVAL, 700L).coerceIn(200L, 3000L),
-        tapIntervalMs = p.getLong(KEY_TAP_INTERVAL, 1800L).coerceIn(500L, 10_000L),
+        frameIntervalMs = p.getLong(KEY_FRAME_INTERVAL, DEFAULT_FRAME_INTERVAL_MS)
+            .coerceIn(200L, 3000L),
+        tapIntervalMs = p.getLong(KEY_TAP_INTERVAL, DEFAULT_TAP_INTERVAL_MS)
+            .coerceIn(500L, 10_000L),
         sameAnswerCooldownMs = p.getLong(KEY_COOLDOWN, 6000L).coerceIn(0L, 60_000L),
         moveTolerancePx = p.getInt(KEY_MOVE_TOLERANCE, 24).coerceIn(0, 400),
         overlayEnabled = p.getBoolean(KEY_OVERLAY, true),
         overlayKeepVisible = p.getBoolean(KEY_OVERLAY_IDLE, true),
         overlayTopDp = p.getInt(KEY_OVERLAY_TOP, 28).coerceIn(0, 400),
         overlayAlpha = p.getFloat(KEY_OVERLAY_ALPHA, 0.55f).coerceIn(0.1f, 1f),
-        overlayWindowBlur = p.getBoolean(KEY_OVERLAY_BLUR, true),
         glassRefractionDp = p.getFloat(KEY_GLASS_REFRACTION, 18f).coerceIn(0f, 48f),
         glassBlurDp = p.getFloat(KEY_GLASS_BLUR, 6f).coerceIn(0f, 32f),
         autoDownloadVocab = p.getBoolean(KEY_AUTO_VOCAB, true),
@@ -104,7 +133,6 @@ object SettingsStore {
             .putBoolean(KEY_OVERLAY_IDLE, s.overlayKeepVisible)
             .putInt(KEY_OVERLAY_TOP, s.overlayTopDp)
             .putFloat(KEY_OVERLAY_ALPHA, s.overlayAlpha)
-            .putBoolean(KEY_OVERLAY_BLUR, s.overlayWindowBlur)
             .putFloat(KEY_GLASS_REFRACTION, s.glassRefractionDp)
             .putFloat(KEY_GLASS_BLUR, s.glassBlurDp)
             .putBoolean(KEY_AUTO_VOCAB, s.autoDownloadVocab)
@@ -116,12 +144,20 @@ object SettingsStore {
     private const val KEY_FRAME_INTERVAL = "frameInterval"
     private const val KEY_TAP_INTERVAL = "tapInterval"
     private const val KEY_COOLDOWN = "cooldown"
+    private const val KEY_MIGRATED_PACING = "pacingMigrated"
+
+    /** 当前的默认节奏。 */
+    private const val DEFAULT_FRAME_INTERVAL_MS = 400L
+    private const val DEFAULT_TAP_INTERVAL_MS = 1100L
+
+    /** 旧的保守默认值，只在迁移时用来判断「用户没动过」。 */
+    private const val LEGACY_FRAME_INTERVAL_MS = 700L
+    private const val LEGACY_TAP_INTERVAL_MS = 1800L
     private const val KEY_MOVE_TOLERANCE = "moveTolerance"
     private const val KEY_OVERLAY = "overlay"
     private const val KEY_OVERLAY_IDLE = "overlayIdle"
     private const val KEY_OVERLAY_TOP = "overlayTop"
     private const val KEY_OVERLAY_ALPHA = "overlayAlpha"
-    private const val KEY_OVERLAY_BLUR = "overlayBlur"
     private const val KEY_GLASS_REFRACTION = "glassRefraction"
     private const val KEY_GLASS_BLUR = "glassBlur"
     private const val KEY_AUTO_VOCAB = "autoVocab"

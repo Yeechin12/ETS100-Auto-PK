@@ -83,6 +83,15 @@ class ScreenCaptureService : Service() {
         private const val MAX_LAYOUT_PROBES = 8
         private const val MAX_OVERRIDE_FAILURES = 3
 
+        /**
+         * 版面探测的降采样倍数。
+         *
+         * 探测只需要知道「文字大致落在哪一带」，不需要看清每个字；而它是全流程最贵的一步：
+         * 整屏 1440×3200 同时跑中英两个识别器，并且探测那一帧**不答题**。
+         * 0.5 倍之后面积只剩 1/4，区域定位精度完全够用。
+         */
+        private const val PROBE_SCALE = 0.5f
+
         @Volatile
         private var instance: ScreenCaptureService? = null
 
@@ -135,20 +144,15 @@ class ScreenCaptureService : Service() {
      *
      * [release] 幂等：旧实现里某条异常路径漏掉释放就会让 `ocrBusy` 永远为 true，
      * 之后每一帧都被丢弃、识别彻底静默。这里用 CAS 保证只释放一次、也只放一次锁。
+     *
+     * 约定：**拿到帧的阶段必须保证最终调用 [release]**；交给下一阶段时，
+     * 由下一阶段负责（各阶段内部用局部 `keep` 标志判断是否需要自己释放）。
      */
     private inner class Frame(val bitmap: Bitmap) {
         var questionCrop: Bitmap? = null
         var optionsCrop: Bitmap? = null
 
-        private val handedOff = AtomicBoolean(false)
         private val released = AtomicBoolean(false)
-
-        /** 交给选项识别阶段，由那个阶段负责释放。 */
-        fun handOff() {
-            handedOff.set(true)
-        }
-
-        fun isHandedOff(): Boolean = handedOff.get()
 
         fun release() {
             if (!released.compareAndSet(false, true)) return
@@ -342,18 +346,46 @@ class ScreenCaptureService : Service() {
         val height = image.height
         val rowPadding = rowStride - pixelStride * width
         return try {
-            val padded = Bitmap.createBitmap(
-                width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
-            )
-            padded.copyPixelsFromBuffer(buffer)
-            val cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
-            if (cropped !== padded) padded.recycle()
-            cropped
+            if (rowPadding <= 0) {
+                // 没有行填充：直接铺满一张位图，省掉一次整图分配 + 18 MB 复制
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                    it.copyPixelsFromBuffer(buffer)
+                }
+            } else {
+                val padded = Bitmap.createBitmap(
+                    width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
+                )
+                padded.copyPixelsFromBuffer(buffer)
+                val cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
+                if (cropped !== padded) padded.recycle()
+                cropped
+            }
         } catch (error: Exception) {
             Log.w(TAG, "位图转换失败", error)
             null
         }
     }
+
+    /** 等比缩放；尺寸没变时直接返回原图（调用方用 `!==` 判断是否需要回收）。 */
+    private fun scaled(bitmap: Bitmap, scale: Float): Bitmap {
+        val width = maxOf(1, (bitmap.width * scale).toInt())
+        val height = maxOf(1, (bitmap.height * scale).toInt())
+        if (width == bitmap.width && height == bitmap.height) return bitmap
+        return try {
+            Bitmap.createScaledBitmap(bitmap, width, height, true)
+        } catch (error: Exception) {
+            Log.w(TAG, "缩放失败", error)
+            bitmap
+        }
+    }
+
+    /** 把探测得到的矩形还原到整屏像素。 */
+    private fun scaleRect(rect: Rect, factor: Float): Rect = Rect(
+        Math.round(rect.left * factor),
+        Math.round(rect.top * factor),
+        Math.round(rect.right * factor),
+        Math.round(rect.bottom * factor)
+    )
 
     private fun analyze(frame: Frame, screenHeight: Int) {
         val screenWidth = frame.bitmap.width
@@ -375,7 +407,7 @@ class ScreenCaptureService : Service() {
             System.currentTimeMillis() - lastProbeAt >= LAYOUT_PROBE_COOLDOWN_MS
         ) {
             probeRequested = false
-            probeLayout(frame, screenWidth, screenHeight)
+            probeLayout(frame, screenHeight)
             return
         }
 
@@ -395,35 +427,55 @@ class ScreenCaptureService : Service() {
                 Math.round(screenHeight * LEGACY_OPTIONS_BOTTOM)
             )
         }
-        analyzeRegions(frame, questionRegion, optionsRegion, screenWidth, override != null)
+        analyzeRegions(frame, questionRegion, optionsRegion, override != null)
     }
 
     /**
      * 用整屏 OCR 探一次版面结构，成功后后续帧改用检测出来的区域。探测这一帧不答题
      * （多花的开销只有这一帧），结构不明显时继续沿用默认比例区域。
      */
-    private fun probeLayout(frame: Frame, screenWidth: Int, screenHeight: Int) {
+    private fun probeLayout(frame: Frame, screenHeight: Int) {
         probeInFlight = true
         lastProbeAt = System.currentTimeMillis()
         layoutProbes++
-        val input = InputImage.fromBitmap(frame.bitmap, 0)
+        // 探测那一帧不答题，明确提示这一帧在干什么，免得看起来像卡死
+        CaptureBus.publishStatus("正在定位题目区域…")
+
+        // 降采样后再跑：整屏双识别器是全流程最贵的一步，而区域定位只要大致位置
+        val probe = scaled(frame.bitmap, PROBE_SCALE)
+        val input = InputImage.fromBitmap(probe, 0)
         val chineseTask = chineseRecognizer!!.process(input)
         val latinTask = latinRecognizer!!.process(input)
         Tasks.whenAll(chineseTask, latinTask).addOnCompleteListener(captureExecutor) { task ->
-            val model = if (task.isSuccessful) {
-                val lines = ArrayList<Text.Line>()
-                lines.addAll(flatten(chineseTask.result))
-                lines.addAll(flatten(latinTask.result))
-                ScreenLayout.detect(lines, screenWidth, screenHeight)
-            } else {
-                null
+            try {
+                val model = if (task.isSuccessful) {
+                    val lines = ArrayList<Text.Line>()
+                    lines.addAll(flatten(chineseTask.result))
+                    lines.addAll(flatten(latinTask.result))
+                    ScreenLayout.detect(lines, probe.width, probe.height)?.let { detected ->
+                        // 探测用的是缩小图，坐标必须还原成整屏像素，
+                        // 后面裁图与点击判断都按整屏坐标走
+                        val up = 1f / PROBE_SCALE
+                        ScreenRegions(
+                            scaleRect(detected.question, up),
+                            scaleRect(detected.options, up)
+                        )
+                    }
+                } else {
+                    null
+                }
+                val adapt = model != null && differsFromDefault(model, screenHeight)
+                regionsOverride = if (adapt) model else null
+                overrideFailures = 0
+                probeInFlight = false
+                CaptureBus.publishStatus(if (adapt) "已按实际版面定位题目区域" else "识别区域正常")
+            } catch (error: Exception) {
+                Log.w(TAG, "版面探测结果处理失败", error)
+                probeInFlight = false
+            } finally {
+                if (probe !== frame.bitmap && !probe.isRecycled) probe.recycle()
+                frame.release()
             }
-            val adapt = model != null && differsFromDefault(model, screenHeight)
-            regionsOverride = if (adapt) model else null
-            overrideFailures = 0
-            probeInFlight = false
-            CaptureBus.publishStatus(if (adapt) "已按实际版面定位题目区域" else "识别区域正常")
-            frame.release()
         }
     }
 
@@ -440,7 +492,6 @@ class ScreenCaptureService : Service() {
         frame: Frame,
         questionRegion: Rect,
         optionsRegion: Rect,
-        screenWidth: Int,
         adapted: Boolean
     ) {
         val questionCrop = crop(frame.bitmap, questionRegion)
@@ -449,47 +500,83 @@ class ScreenCaptureService : Service() {
             return
         }
         frame.questionCrop = questionCrop
+        val input = InputImage.fromBitmap(questionCrop, 0)
         try {
-            val chineseTask = chineseRecognizer!!.process(InputImage.fromBitmap(questionCrop, 0))
-            val englishTask = latinRecognizer!!.process(InputImage.fromBitmap(questionCrop, 0))
-            Tasks.whenAll(chineseTask, englishTask).addOnCompleteListener(captureExecutor) { task ->
-                try {
-                    if (!task.isSuccessful) {
-                        CaptureBus.publishStatus("题干识别失败，请重试")
-                        onStructuralMiss(adapted)
-                        return@addOnCompleteListener
-                    }
-                    val chineseLines = flatten(chineseTask.result)
-                    val englishLines = flatten(englishTask.result)
-                    val englishTarget =
-                        matcher?.findEnglishPromptWord(englishLines, screenWidth)
-                    // 题干的语种比选项区附近的拉丁文字更可靠，所以中文题干优先。
-                    when {
-                        hasChineseQuestion(chineseLines) -> {
-                            frame.handOff()
-                            recognizeEnglishOptions(frame, optionsRegion, chineseLines, adapted)
+            // 先只跑中文识别：中文题干占绝大多数，那种情况下拉丁结果完全用不上，
+            // 每帧固定跑两个识别器等于白花一次整块 OCR 的时间。
+            chineseRecognizer!!.process(input)
+                .addOnCompleteListener(captureExecutor) { task ->
+                    var keep = false
+                    try {
+                        if (!task.isSuccessful) {
+                            CaptureBus.publishStatus("题干识别失败，请重试")
+                            onStructuralMiss(adapted)
+                            return@addOnCompleteListener
                         }
-                        englishTarget != null -> {
-                            frame.handOff()
+                        val chineseLines = flatten(task.result)
+                        keep = true
+                        // 题干的语种比选项区附近的拉丁文字更可靠，所以中文题干优先。
+                        if (hasChineseQuestion(chineseLines)) {
+                            recognizeEnglishOptions(frame, optionsRegion, chineseLines, adapted)
+                        } else {
+                            recognizeEnglishPrompt(frame, input, optionsRegion, adapted)
+                        }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "题干处理失败", error)
+                        CaptureBus.publishStatus("识别失败，请重试")
+                    } finally {
+                        // keep 为 true 表示已交给下一阶段，由它负责释放这块位图
+                        if (!keep) frame.release()
+                    }
+                }
+        } catch (error: Exception) {
+            Log.w(TAG, "题干 OCR 派发失败", error)
+            frame.release()
+            CaptureBus.publishStatus("识别失败，请重试")
+        }
+    }
+
+    /**
+     * 题干不是中文时，才再跑一次拉丁识别去认英文题干。
+     *
+     * 只有这条路径需要第二次题干 OCR（英文题干 + 中文选项），中文题干走不到这里。
+     */
+    private fun recognizeEnglishPrompt(
+        frame: Frame,
+        input: InputImage,
+        optionsRegion: Rect,
+        adapted: Boolean
+    ) {
+        try {
+            latinRecognizer!!.process(input)
+                .addOnCompleteListener(captureExecutor) { task ->
+                    var keep = false
+                    try {
+                        if (!task.isSuccessful) {
+                            CaptureBus.publishStatus("题干识别失败，请重试")
+                            onStructuralMiss(adapted)
+                            return@addOnCompleteListener
+                        }
+                        val englishTarget = matcher?.findEnglishPromptWord(
+                            flatten(task.result), frame.bitmap.width
+                        )
+                        if (englishTarget != null) {
+                            keep = true
                             recognizeChineseOptions(
                                 frame, optionsRegion, englishTarget.word, adapted
                             )
-                        }
-                        else -> {
+                        } else {
                             CaptureBus.publishStatus("未识别到中英文题干")
                             onStructuralMiss(adapted)
                         }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "英文题干处理失败", error)
+                    } finally {
+                        if (!keep) frame.release()
                     }
-                } catch (error: Exception) {
-                    Log.w(TAG, "题干处理失败", error)
-                    CaptureBus.publishStatus("识别失败，请重试")
-                } finally {
-                    // 没有交给下一阶段就在这里释放；release 幂等，交给下一阶段时它是空操作。
-                    if (!frame.isHandedOff()) frame.release()
                 }
-            }
         } catch (error: Exception) {
-            Log.w(TAG, "题干 OCR 派发失败", error)
+            Log.w(TAG, "英文题干 OCR 派发失败", error)
             frame.release()
             CaptureBus.publishStatus("识别失败，请重试")
         }
